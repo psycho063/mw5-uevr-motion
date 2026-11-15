@@ -1,0 +1,253 @@
+{
+  "TelemetryBehaviour": {
+    "GameFamily": 1,
+    "DefaultMaxSpeed": 150.0,
+    "HasRumbleStripsContactSurface": false,
+    "AllowGimbleLockSanitizer": false
+  },
+  "TelemetryDefinition": {
+    "LayoutMajorVersion": 2,
+    "LayoutMinorVersion": 1,
+    "ProtocolVersion": 1,
+    "Fields": [
+      {
+        "FieldType": "YawDegrees",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "PitchDegrees",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "RollDegrees",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "YawRateDegreesPerSecond",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "PitchRateDegreesPerSecond",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "RollRateDegreesPerSecond",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "LocalSurgeMs2",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "LocalSwayMs2",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "LocalHeaveMs2",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "LocalVelocityForwardMps",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "LocalVelocityLateralMps",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "LocalVelocityUpMps",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "VehiclePositionNorth",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "VehiclePositionEast",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "VehiclePositionUp",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "SpeedKmh",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "GroundSpeedKmh",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "VehicleName",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "VehicleId",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "EngineRpm",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "EngineMaxRpm",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "Throttle",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "Gear",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "MaxGears",
+        "TypeName": "StandardField"
+      },
+      {
+        "Name": "MascInstalled",
+        "DisplayName": null,
+        "Comment": "MASC or supercharger fitted, 0 or 1",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MascEngaged",
+        "DisplayName": null,
+        "Comment": "MASC or supercharger currently on, 0 or 1",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MascStarted",
+        "DisplayName": null,
+        "Comment": "MASC switched on, held for EventHoldMs",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MascEnded",
+        "DisplayName": null,
+        "Comment": "MASC switched off, held for EventHoldMs",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MascType",
+        "DisplayName": null,
+        "Comment": "0 = MASC, 1 = supercharger",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MascGauge",
+        "DisplayName": null,
+        "Comment": "MASC gauge, 0 to 1",
+        "BinaryType": 8,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MascWarningPoint",
+        "DisplayName": null,
+        "Comment": "Gauge value where the game starts warning",
+        "BinaryType": 8,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MascDamagePoint",
+        "DisplayName": null,
+        "Comment": "Gauge value where the game starts dealing damage",
+        "BinaryType": 8,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "JumpJetState",
+        "DisplayName": null,
+        "Comment": "0 inactive, 1 warm-up, 2 firing, 3 cooldown",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "JumpStarted",
+        "DisplayName": null,
+        "Comment": "Jump jets started firing, held for EventHoldMs",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "JumpEnded",
+        "DisplayName": null,
+        "Comment": "Jump jets stopped firing, held for EventHoldMs",
+        "BinaryType": 2,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "HeatPercent",
+        "DisplayName": null,
+        "Comment": "Mech heat, 0 to 1",
+        "BinaryType": 8,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "GameSpeedKmh",
+        "DisplayName": null,
+        "Comment": "Speed as the game reports it, km/h",
+        "BinaryType": 8,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "MaxSpeedKmh",
+        "DisplayName": null,
+        "Comment": "Current top speed, km/h; rises while MASC is on",
+        "BinaryType": 8,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "BaseMaxSpeedKmh",
+        "DisplayName": null,
+        "Comment": "Top speed without MASC, km/h; selects the speed band",
+        "BinaryType": 8,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "Chassis",
+        "DisplayName": null,
+        "Comment": "Mech chassis id, for example Phoenixhawk",
+        "BinaryType": 10,
+        "Length": 32,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "Name": "Variant",
+        "DisplayName": null,
+        "Comment": "Mech variant, for example PXH-7S",
+        "BinaryType": 10,
+        "Length": 32,
+        "TypeName": "CustomTelemetryField"
+      },
+      {
+        "FieldType": "AbsActive",
+        "TypeName": "StandardField"
+      }
+    ]
+  },
+  "ManagerVersion": 3,
+  "GameSignature": 3943313213,
+  "TelemetrySignature": 3615171145,
+  "Name": "MechWarrior 5 Mercenaries (UEVR)",
+  "UniqueId": "27a2e5cd-aa4c-431e-8c6e-d9a5dcd9f71f",
+  "DefaultUDPPort": 20779,
+  "DetectionProcesses": [
+    {
+      "ProcessName": "MechWarrior-Win64-Shipping",
+      "FileChecks": []
+    }
+  ],
+  "SimStartCommand": null,
+  "SimStartArguments": null,
+  "UseExtractorProcess": false,
+  "ExtractorProcessCommand": null,
+  "IconPath": null
+}

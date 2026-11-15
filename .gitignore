@@ -1,0 +1,10 @@
+/build/
+/dist/
+/release/
+/simhub-runtime/
+*.zip
+*.dll
+*.pdb
+*.log
+*.user
+.vs/
