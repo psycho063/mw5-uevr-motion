@@ -4,6 +4,8 @@
 #include "uevr/Plugin.hpp"
 #include "Telemetry.hpp"
 #include "SimHub.hpp"
+#include "Gait.hpp"
+#include "GaitTable.hpp"
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -21,7 +23,10 @@
 using API=uevr::API;
 using Object=API::UObject;
 namespace {
-constexpr const char* kVersion="0.6.0";
+constexpr const char* kVersion="0.7.1";
+// Set when GaitLearning is on: the reader then also fetches the mech's root
+// transform. Off by default, and nothing of the learner runs while it is off.
+std::atomic_bool g_learning{false};
 // Notes from the game thread for the debug log; the sender thread writes them out.
 std::atomic_bool g_notesEnabled{false};
 std::mutex g_notesMutex;std::vector<std::string> g_notes;
@@ -110,8 +115,8 @@ const char* text(Reader r) {
 // (MWMech, MWMASCComponent, MWJumpJetComponent, MWHeatComponent) by name, so it
 // works with and without mods such as YetAnotherMechlab.
 struct Mech {
-    Object *pawn{},*cockpit{},*masc{},*jets{},*heat{};
-    API::UFunction *toWorld{},*speed{},*maxSpeed{},*throttle{};
+    Object *pawn{},*cockpit{},*masc{},*jets{},*heat{},*root{};
+    API::UFunction *toWorld{},*rootToWorld{},*speed{},*maxSpeed{},*throttle{};
     API::UFunction *hasMasc{},*engaged{},*gauge{},*hasJets{},*jetState{},*heatPercent{};
     int32_t warningOffset{-1},damageOffset{-1},typeOffset{-1};
     bool isMech{};double retryIn{},tagRetryIn{};
@@ -153,6 +158,12 @@ struct Mech {
             damageOffset=offset(L"GaugeDamagePoint",L"FloatProperty");
             typeOffset=offset(L"Type",L"EnumProperty");
         }
+        if(g_learning) {
+            // The mech's own root follows the ground; the cockpit's height above it
+            // is the animation's bob alone.
+            root=object(pawn,L"RootComponent");
+            rootToWorld=getter(root,L"K2_GetComponentToWorld",sizeof(Transform));
+        }
         find_cockpit();find_tag();
         note("mech "+narrow(pawn->get_full_name())+": MASC component "+(masc?"found":"missing")+", jump jet component "+(jets?"found":"missing")+
              ", heat component "+(heat?"found":"missing")+", cockpit "+(cockpit?toWorld?"found":"found without transform":"not found yet"));
@@ -190,6 +201,10 @@ Reader sample_game(mw5::Sample* out,float dt) {
     out->paused=paused(pawn);
     out->position=mw5::Vec3{t.tx,t.ty,t.tz}*0.01;
     out->rotation={t.qx,t.qy,t.qz,t.qw};
+    if(m.rootToWorld) {
+        auto base=call<Transform>(m.root,m.rootToWorld);
+        out->bodyHeightM=(t.tz-base.tz)*0.01f;out->bodyHeightValid=true;
+    }
     out->throttle=call<float>(pawn,m.throttle);
     out->gameSpeedKmh=call<float>(pawn,m.speed)*0.036f; // cm/s
     out->maxSpeedKmh=call<float>(pawn,m.maxSpeed)*0.036f;
@@ -272,9 +287,17 @@ class MW5Motion final:public uevr::Plugin {
     // Names already given this mission, so switching between lance mechs, or
     // damage that lowers a mech's top speed, does not rename a mech.
     std::map<Object*,mw5::Identity> named;
+    // Gaits from mw5_mech_gait.csv in the profile folder, keyed by lower-case
+    // chassis; they take precedence over the table compiled into the plugin.
+    struct NamedGait { std::string chassis;mw5::Gait gait; };
+    std::map<std::string,NamedGait> gaitFile;
+    std::string gaitSource;
+    // Optional learning of chassis that are in neither (GaitLearning = 1).
+    bool learning{},learnThis{};mw5::GaitLearner learner;double learnCheckIn{};
     // Shared, under mutex.
     std::mutex mutex;mw5::Frame latest{};uint64_t tickTime{},sessionId{};double sessionSeconds{};
     mw5::Identity sharedIdentity;uint32_t identityVersion{};
+    std::string gaitFileText; // complete new file content for the sender thread to write
     // Sender thread.
     mw5::HapticSettings hapticSettings;mw5::HapticState haptics;uint32_t hapticSequence{};
     mw5::Identity sentIdentity;uint32_t sentIdentityVersion{};
@@ -301,7 +324,14 @@ class MW5Motion final:public uevr::Plugin {
         settings.accelerationHz=get("AccelerationSmoothingHz",2,0,120);
         settings.angularHz=get("AngularSmoothingHz",2,0,120);
         settings.heaveGain=get("HeaveGain",1,0,10);
-        settings.heaveLimitG=get("HeaveLimitG",3,0,100);
+        settings.heaveLimitG=get("HeaveLimitG",6,0,100);
+        settings.heaveComfortG=get("HeaveComfortG",3,0,100);
+        settings.heaveSafetyNet=get("HeaveSafetyNet",1,0,1)!=0;
+        settings.bounceRatio=get("CockpitBounceRatio",0.75,0.1,2);
+        // The chassis's gait: the profile folder's file first, then the built-in table.
+        settings.gait={};gaitSource="none";
+        if(auto found=gaitFile.find(lower(chassis));!chassis.empty()&&found!=gaitFile.end()){settings.gait=found->second.gait;gaitSource="mw5_mech_gait.csv";}
+        else if(mw5::builtin_gait(chassis,settings.gait))gaitSource="built-in table";
         settings.maxAccelerationG=get("MaxAccelerationG",10,0.1,100);
         settings.maxAngularSpeedDeg=get("MaxAngularSpeedDeg",720,1,3600);
         settings.teleportDistanceM=get("TeleportDistanceM",10,1,1000);
@@ -310,6 +340,42 @@ class MW5Motion final:public uevr::Plugin {
         auto sign=[&](const char* name){return get(name,1,-1,1)<0?-1.0:1.0;};
         settings.rollSign=sign("RollSign");settings.pitchSign=sign("PitchSign");settings.yawSign=sign("YawSign");
         settings.lateralSign=sign("LateralSign");settings.verticalSign=sign("VerticalSign");settings.longitudinalSign=sign("LongitudinalSign");
+    }
+    // Lowest speed at which the comfort cap acts for the current mech, for the log.
+    // 0 when it never does below 400 km/h.
+    double cap_speed() const {
+        for(double kmh=1;kmh<=400;kmh+=1)if(mw5::comfort_factor(kmh,settings)<1)return kmh;
+        return 0;
+    }
+    std::string cap_text() const {
+        double kmh=cap_speed();
+        if(settings.heaveComfortG<=0)return "the comfort cap is off";
+        if(kmh<=0)return "the comfort cap never acts for this mech";
+        char text[80];snprintf(text,sizeof(text),"the comfort cap acts from about %.0f km/h",kmh);return text;
+    }
+    // Game thread, GaitLearning only. Feeds the learner and, once it knows the
+    // bounce well enough, uses the result and queues it for mw5_mech_gait.csv.
+    // Returns true when a new file is ready to hand to the sender thread.
+    bool learn(const mw5::Sample& s,const mw5::Frame& f,float dt,std::string& file) {
+        if(!learnThis||!s.bodyHeightValid)return false;
+        const mw5::Gait timing{};
+        learner.update(dt,s.bodyHeightM,f.GroundSpeedKmh,f.OutputActive&&s.jetState==mw5::JetsInactive,timing,settings.bounceRatio);
+        if((learnCheckIn-=dt)>0||!learner.ready())return false;
+        learnCheckIn=5;
+        auto g=learner.gait(timing);
+        // Only bother when it moved by more than a few percent.
+        auto moved=[](double a,double b){return std::abs(a-b)>0.03*std::max(a,b);};
+        if(!g.known()||(!moved(g.walkBounceM,settings.gait.walkBounceM)&&!moved(g.runBounceM,settings.gait.runBounceM)))return false;
+        settings.gait=g;gaitSource="learning";
+        gaitFile[lower(identity.chassis)]={identity.chassis,g};
+        file="# Gaits for chassis the plugin's built-in table does not cover. Written by the plugin\n"
+             "# when GaitLearning = 1; rows can also be added or corrected by hand.\n"+std::string(mw5::kGaitHeader)+"\n";
+        for(auto& entry:gaitFile)file+=mw5::format_gait_line(entry.second.chassis,entry.second.gait)+"\n";
+        char line[240];
+        snprintf(line,sizeof(line),"learned gait for %s after %d steps: walk bounce %.0f cm, run bounce %.0f cm; %s",
+            identity.chassis.c_str(),learner.steps(),g.walkBounceM*100,g.runBounceM*100,cap_text().c_str());
+        note(line);
+        return true;
     }
     // Game thread. Returns true when the identity changed and must be shared.
     bool update_identity(const mw5::Sample& s) {
@@ -323,10 +389,18 @@ class MW5Motion final:public uevr::Plugin {
                 note("back in a mech named earlier: \""+identity.profile+"\"");
             }
             load_motion(identity.chassis);changed=true;
+            learnThis=learning&&!identity.chassis.empty()&&!settings.gait.known();
+            learner.reset();learnCheckIn=5;
             if(!appliedTag.empty()) {
-                char line[256];
-                snprintf(line,sizeof(line),"mech tag %s: chassis %s, variant %s; heave gain %g, heave limit %g G",appliedTag.c_str(),
-                    identity.chassis.c_str(),identity.variant.c_str(),settings.heaveGain,settings.heaveLimitG);
+                char line[400];
+                snprintf(line,sizeof(line),"mech tag %s: chassis %s, variant %s; heave gain %g, comfort %g G, ceiling %g G",appliedTag.c_str(),
+                    identity.chassis.c_str(),identity.variant.c_str(),settings.heaveGain,settings.heaveComfortG,settings.heaveLimitG);
+                note(line);
+                const auto& g=settings.gait;
+                if(g.known())snprintf(line,sizeof(line),"gait from %s: walk bounce %.0f cm at %.1f km/h, run bounce %.0f cm from %.1f km/h; %s",
+                    gaitSource.c_str(),g.walkBounceM*100,g.walkSpeedKmh,g.runBounceM*100,g.runSpeedKmh,cap_text().c_str());
+                else snprintf(line,sizeof(line),"no gait known for this chassis: no comfort cap, safety net %s%s",
+                    settings.heaveSafetyNet?"on":"off",learnThis?", learning its bounce":"");
                 note(line);
             }
         }
@@ -380,12 +454,13 @@ class MW5Motion final:public uevr::Plugin {
         if(!rows.is_open()||now<nextRow||sameFrame)return;
         nextRow=std::max(nextRow+1000/rowHz,now);
         char line[700];
-        int n=snprintf(line,sizeof(line),"%.3f,%u,%.5f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.3f,%d,%.4f,%d,%.4f,%u,%d,%d,%.0f\n",
+        int n=snprintf(line,sizeof(line),"%.3f,%u,%.5f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.3f,%d,%.4f,%d,%.4f,%u,%d,%d,%.0f,%.2f,%.3f,%.4f,%.4f\n",
             (now-started)/1000.0,f.Sequence,f.DeltaTime,f.OutputActive,f.Paused,f.PositionX,f.PositionY,f.PositionZ,
             f.RollDegrees,f.PitchDegrees,f.YawDegrees,f.RollSpeed,f.PitchSpeed,f.YawSpeed,
             f.LocalVelocityX,f.LocalVelocityY,f.LocalVelocityZ,f.LocalAccelerationX,f.LocalAccelerationY,f.LocalAccelerationZ,
             f.SpeedKmh,f.GameSpeedKmh,f.MaxSpeedKmh,f.Throttle,f.MascEngaged,f.MascGauge,f.JumpJetState,f.HeatPercent,f.PhysicsDiscontinuityCounter,
-            hapticSettings.gear&&haptics.mascGear?2:1,hapticSettings.abs&&haptics.absActive?1:0,hapticSettings.engine?haptics.rpm:0.0);
+            hapticSettings.gear&&haptics.mascGear?2:1,hapticSettings.abs&&haptics.absActive?1:0,hapticSettings.engine?haptics.rpm:0.0,
+            f.GroundSpeedKmh,f.BouncePeakG,f.HeaveFactor,f.SafetyGain);
         if(n<=0)return;
         rows.write(line,n);recorded+=static_cast<uint64_t>(n);
         if(recorded>=kRecordLimit){rows.close();event(now,"sample recording stopped: size limit reached");}
@@ -405,9 +480,14 @@ class MW5Motion final:public uevr::Plugin {
         uint32_t lastSequence{};uint64_t lastNeutral{};
         while(!stop) {
             uint64_t now=GetTickCount64(),tick{},session{};double seconds{};mw5::Frame f{};
+            std::string gaitText;
             {std::scoped_lock lock(mutex);
-                f=latest;tick=tickTime;session=sessionId;seconds=sessionSeconds;
+                f=latest;tick=tickTime;session=sessionId;seconds=sessionSeconds;gaitText.swap(gaitFileText);
                 if(identityVersion!=sentIdentityVersion){sentIdentity=sharedIdentity;sentIdentityVersion=identityVersion;}
+            }
+            if(!gaitText.empty()) {
+                // Learned gaits; disk I/O stays on this thread.
+                std::ofstream out(profile/L"mw5_mech_gait.csv",std::ios::trunc);out<<gaitText;
             }
             // A frozen game thread must not leave the last cues standing.
             bool stale=!tick||now-tick>250;
@@ -437,6 +517,13 @@ public:
             f.hz=static_cast<int>(setting(cfg,(prefix+"RateHz").c_str(),f.hz,1,240));
             if(auto ip=lookup(cfg,prefix+"Ip"))f.ip=*ip;};
         feed(external,"SimHub",1);feed(debug,"DebugJson",0);
+        // Optional per-chassis gaits next to the configuration: corrections, modded
+        // mechs, and whatever GaitLearning wrote earlier.
+        {
+            std::ifstream in(profile/L"mw5_mech_gait.csv");std::string line,chassis;mw5::Gait gait;
+            while(std::getline(in,line))if(mw5::parse_gait_line(line,chassis,gait))gaitFile[lower(chassis)]={chassis,gait};
+        }
+        learning=setting(cfg,"GaitLearning",0,0,1)!=0;g_learning=learning;
         load_motion({});
         hapticSettings.gear=setting(cfg,"HapticGearEnable",1,0,1)!=0;
         hapticSettings.engine=setting(cfg,"HapticEngineEnable",1,0,1)!=0;
@@ -467,11 +554,15 @@ public:
             rows.open(profile/L"mw5_motion_debug.csv",std::ios::trunc);
             rows<<"TimeS,Sequence,DeltaTime,Active,Paused,PosX,PosY,PosZ,RollDeg,PitchDeg,YawDeg,RollSpeed,PitchSpeed,YawSpeed,"
                   "VelLateral,VelVertical,VelForward,AccLateral,AccVertical,AccForward,SpeedKmh,GameSpeedKmh,MaxSpeedKmh,Throttle,"
-                  "MascEngaged,MascGauge,JumpJetState,HeatPercent,Discontinuities,Gear,AbsActive,EngineRpm\n";
+                  "MascEngaged,MascGauge,JumpJetState,HeatPercent,Discontinuities,Gear,AbsActive,EngineRpm,"
+                  "GroundSpeedKmh,BouncePeakG,HeaveFactor,SafetyGain\n";
             g_notesEnabled=events.is_open();
-            char line[320];
+            char line[400];
             snprintf(line,sizeof(line),"MW5 Motion %s debug log. SimHub %s %s:%d. CockpitYawOffsetDeg=%g, smoothing Hz: position=%g velocity=%g acceleration=%g angular=%g, %d rows/s",
                 kVersion,external.enabled?"on":"off",external.ip.c_str(),external.port,settings.yawOffsetDeg,settings.positionHz,settings.velocityHz,settings.accelerationHz,settings.angularHz,rowHz);
+            if(events.is_open())event(started,line);
+            snprintf(line,sizeof(line),"heave: comfort cap %g G, safety net %s, soft ceiling %g G, cockpit bounce ratio %g; %d chassis in the built-in gait table, %d from mw5_mech_gait.csv, gait learning %s",
+                settings.heaveComfortG,settings.heaveSafetyNet?"on":"off",settings.heaveLimitG,settings.bounceRatio,static_cast<int>(std::size(mw5::kGaitTable)),static_cast<int>(gaitFile.size()),learning?"on":"off");
             if(events.is_open())event(started,line);
         }
         WSADATA wsa{};
@@ -489,7 +580,10 @@ public:
         s.timestampMs=GetTickCount64();++samples;if(s.valid)++validSamples;
         bool renamed=update_identity(s);
         auto f=sampler.update(s,settings);
+        std::string newGaitFile;
+        bool learned=learning&&learn(s,f,dt,newGaitFile);
         std::scoped_lock lock(mutex);
+        if(learned)gaitFileText=std::move(newGaitFile);
         if(s.identity&&sessionId!=(emitterId^s.identity)){sessionId=emitterId^s.identity;sessionSeconds=0;}
         if(s.valid&&!s.paused&&std::isfinite(dt)&&dt>0)sessionSeconds+=dt;
         latest=f;tickTime=s.timestampMs;

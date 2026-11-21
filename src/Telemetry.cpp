@@ -30,6 +30,37 @@ static Vec3 bounded(Vec3 v,double limit) { return {bounded(v.x,limit),bounded(v.
 // depend on the frame rate.
 static double gain(double hz,double dt) { return hz>0?1-std::exp(-2*pi*hz*dt):1; }
 
+Stride stride(const Gait& g,double speedKmh) {
+    Stride s;
+    double speed=std::abs(speedKmh),span=g.runSpeedKmh-g.walkSpeedKmh;
+    // The game cross-fades the walk and the run cycle by speed and plays the mix
+    // at the blended cycle length, without scaling playback to the speed.
+    s.blend=span>0?std::clamp((speed-g.walkSpeedKmh)/span,0.0,1.0):speed>=g.runSpeedKmh?1.0:0.0;
+    double cycle=(1-s.blend)*g.walkCycleS+s.blend*g.runCycleS;
+    s.stepsPerSecond=cycle>0?g.stepsPerCycle/cycle:0;
+    s.bounceM=(1-s.blend)*g.walkBounceM+s.blend*g.runBounceM;
+    // Below walking speed the walk cycle fades in from standing still.
+    if(g.walkSpeedKmh>0&&speed<g.walkSpeedKmh)s.bounceM*=speed/g.walkSpeedKmh;
+    return s;
+}
+double smoothing_loss(double hz,const Settings& cfg) {
+    double loss=1;
+    for(double cutoff:{cfg.positionHz,cfg.velocityHz,cfg.accelerationHz})
+        if(cutoff>0)loss/=std::sqrt(1+(hz/cutoff)*(hz/cutoff));
+    return loss;
+}
+double bounce_peak(double speedKmh,const Settings& cfg) {
+    if(!cfg.gait.known())return 0;
+    Stride s=stride(cfg.gait,speedKmh);
+    // A bounce of height h at f steps a second peaks at (h/2)(2 pi f)^2.
+    double swing=2*pi*s.stepsPerSecond;
+    return s.bounceM*cfg.bounceRatio/2*swing*swing*smoothing_loss(s.stepsPerSecond,cfg)*std::abs(cfg.heaveGain);
+}
+double comfort_factor(double speedKmh,const Settings& cfg) {
+    double level=cfg.heaveComfortG*gravity,peak=bounce_peak(speedKmh,cfg);
+    return level>0&&peak>level?level/peak:1;
+}
+
 Frame neutral(Frame f,bool stale) {
     // Preserve position and the raw MASC gauge for diagnostics; clear all rig cues.
     f.OutputActive=0;f.Stale=stale;f.DeltaTime=0;
@@ -49,6 +80,7 @@ void Sampler::reset() {
     hasPrevious=hasVelocity=hasRates=false;
     position=velocity=acceleration=rates={};
     mascStartHold=mascEndHold=jumpStartHold=jumpEndHold=0;
+    jumpEase=heaveEnvelope=0;safetyGain=1;
 }
 Frame Sampler::update(Sample s,const Settings& cfg) {
     Frame f{};f.Sequence=++sequence;
@@ -89,7 +121,31 @@ Frame Sampler::update(Sample s,const Settings& cfg) {
     Vec3 local=s.rotation.unrotate(velocity);
     f.LocalVelocityX=bounded(local.y,10000);f.LocalVelocityY=bounded(local.z,10000);f.LocalVelocityZ=bounded(local.x,10000);
     f.LocalAccelerationX=bounded(acceleration.y*cfg.lateralSign,limit);
-    double heave=acceleration.z*cfg.heaveGain,ceiling=cfg.heaveLimitG*gravity;
+    // Comfort cap: scale the heave by what the gait predicts for this ground
+    // speed. It eases off while the jump jets are busy (that state lasts until
+    // after touchdown), so lift-off and landing keep their full kick.
+    double groundKmh=std::hypot(local.x,local.y)*3.6;
+    double factor=comfort_factor(groundKmh,cfg);
+    bool jumping=s.jetState!=JetsInactive;
+    jumpEase=jumping?std::min(1.0,jumpEase+s.dt/0.3):std::max(0.0,jumpEase-s.dt/0.5);
+    factor=1-(1-factor)*(1-jumpEase);
+    double heave=acceleration.z*cfg.heaveGain*factor;
+    // Safety net: follow the peaks of the heave on the ground and, while they
+    // stay above 1.25 times the comfort level, ease a second gain down slowly.
+    if(cfg.heaveSafetyNet&&cfg.heaveComfortG>0) {
+        heaveEnvelope*=std::exp(-s.dt);
+        if(jumpEase<=0)heaveEnvelope=std::max(heaveEnvelope,std::abs(heave));
+        double level=cfg.heaveComfortG*gravity*1.25;
+        double wanted=heaveEnvelope>level?level/heaveEnvelope:1;
+        safetyGain+=(wanted-safetyGain)*(1-std::exp(-s.dt/(wanted<safetyGain?1.5:3.0)));
+        heave*=safetyGain;
+    }
+    else {heaveEnvelope=0;safetyGain=1;}
+    f.GroundSpeedKmh=bounded(groundKmh,10000);
+    f.BouncePeakG=bounded(bounce_peak(groundKmh,cfg)/gravity,1000);
+    f.HeaveFactor=static_cast<float>(factor);f.SafetyGain=static_cast<float>(safetyGain);
+    f.GaitKnown=cfg.gait.known();
+    double ceiling=cfg.heaveLimitG*gravity;
     if(ceiling>0)heave=ceiling*std::tanh(heave/ceiling);
     f.LocalAccelerationY=bounded(heave*cfg.verticalSign,limit);
     f.LocalAccelerationZ=bounded(acceleration.x*cfg.longitudinalSign,limit);
@@ -144,7 +200,8 @@ std::string json(const Frame& f) {
 #define FIELD(name) s<<",\"" #name "\":"<<f.name
     FIELD(Paused);FIELD(OutputActive);FIELD(FrameValid);FIELD(Stale);
     FIELD(Sequence);FIELD(TimestampMS);FIELD(DeltaTime);FIELD(PhysicsDiscontinuityCounter);
-    FIELD(SpeedMps);FIELD(SpeedKmh);FIELD(GameSpeedKmh);FIELD(MaxSpeedKmh);FIELD(Throttle);
+    FIELD(SpeedMps);FIELD(SpeedKmh);FIELD(GroundSpeedKmh);FIELD(GameSpeedKmh);FIELD(MaxSpeedKmh);FIELD(Throttle);
+    FIELD(GaitKnown);FIELD(BouncePeakG);FIELD(HeaveFactor);FIELD(SafetyGain);
     FIELD(LocalVelocityX);FIELD(LocalVelocityY);FIELD(LocalVelocityZ);
     FIELD(LocalAccelerationX);FIELD(LocalAccelerationY);FIELD(LocalAccelerationZ);
     FIELD(GForceLateral);FIELD(GForceVertical);FIELD(GForceLongitudinal);

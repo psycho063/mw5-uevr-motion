@@ -21,3 +21,4 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'build\Release\MW5Motion.dll') -
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'mw5_motion.cfg') -Destination (Join-Path $PSScriptRoot 'dist\mw5_motion.cfg') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot 'dist\simhub') | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'simhub\MechWarrior5.simdef') -Destination (Join-Path $PSScriptRoot 'dist\simhub\MechWarrior5.simdef') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'data\mech_gait.csv') -Destination (Join-Path $PSScriptRoot 'dist\mech_gait_reference.csv') -Force

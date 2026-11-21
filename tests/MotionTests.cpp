@@ -1,5 +1,6 @@
 #include "Telemetry.hpp"
 #include "SimHub.hpp"
+#include "Gait.hpp"
 #include <cstddef>
 #include <cstring>
 #include <cmath>
@@ -11,7 +12,7 @@ void check(bool b,const char* text){if(!b){std::cerr<<"FAIL: "<<text<<'\n';std::
 bool near(double a,double b,double epsilon=0.001){return std::abs(a-b)<epsilon;}
 Sample base(){Sample s{};s.valid=true;s.controlled=true;s.identity=1;s.dt=0.01;return s;}
 // No smoothing and no cockpit yaw correction: outputs follow the inputs exactly.
-Settings raw(){Settings c{};c.yawOffsetDeg=0;c.positionHz=c.velocityHz=c.accelerationHz=c.angularHz=0;c.eventHoldSeconds=0;c.heaveLimitG=0;return c;}
+Settings raw(){Settings c{};c.yawOffsetDeg=0;c.positionHz=c.velocityHz=c.accelerationHz=c.angularHz=0;c.eventHoldSeconds=0;c.heaveLimitG=0;c.heaveComfortG=0;c.heaveSafetyNet=false;return c;}
 int main(){
     Settings cfg=raw();Sample s=base();Sampler sampler;Frame f{};
     check(!sampler.update(s,cfg).OutputActive,"first sample neutral");
@@ -176,5 +177,109 @@ int main(){
     bands.specificChassis={"dragon","Locust"};
     check(profile_name("Dragon",86.4,bands)=="MW5 Dragon"&&profile_name("Locust",129.6,bands)=="MW5 Locust","listed chassis get their own name");
     check(profile_name("Phoenixhawk",97.2,bands)=="MW5 Fast"&&profile_name("",86.4,bands)=="MW5 Fast","others stay in their band");
+
+    // Gait table and the stride it predicts, against values measured in game
+    // (docs/recordings, raw cockpit height: steps per second and bounce height).
+    Gait pxh{},mauler{},jager{},atlas{},jenner{},timber{},none{};
+    check(builtin_gait("phoenixhawk",pxh)&&builtin_gait("Mauler",mauler)&&builtin_gait("JAGERMECH",jager)&&builtin_gait("Atlas",atlas)
+        &&builtin_gait("Jenner",jenner)&&builtin_gait("TimberWolf",timber),"chassis found in the table, any case");
+    check(!builtin_gait("NoSuchMech",none)&&!builtin_gait("",none)&&!none.known()&&pxh.known(),"unknown chassis is not found");
+    check(near(pxh.runBounceM,2.093)&&near(pxh.walkBounceM,1.255)&&near(jager.runSpeedKmh,64.8)&&near(atlas.walkSpeedKmh,10.8),"table values and units");
+    check(near(stride(mauler,55.0).stepsPerSecond,1.30,0.04),"Mauler 55 km/h: 1.30 steps/s measured");
+    check(near(stride(pxh,70.1).stepsPerSecond,1.46,0.04)&&near(stride(pxh,96.3).stepsPerSecond,1.85,0.08),"Phoenix Hawk step rate");
+    check(near(stride(jager,33.5).stepsPerSecond,1.23,0.03)&&near(stride(jager,64.6).stepsPerSecond,2.00,0.03),"Jagermech runs from 64.8 km/h");
+    check(near(stride(atlas,25.3).stepsPerSecond,1.12,0.03)&&near(stride(atlas,47.8).stepsPerSecond,1.37,0.03),"Atlas uses its own blend speeds");
+    check(near(stride(jenner,52.1).stepsPerSecond,1.26,0.04)&&near(stride(jenner,113.1).stepsPerSecond,2.04,0.05),"Jenner step rate");
+    check(near(stride(timber,43.7).stepsPerSecond,1.20,0.03)&&near(stride(timber,86.2).stepsPerSecond,1.68,0.05),"Timber Wolf step rate");
+    check(near(stride(jager,33.5).bounceM*0.75,0.956,0.03)&&near(stride(jenner,52.1).bounceM*0.75,0.898,0.03)&&near(stride(atlas,47.8).bounceM*0.75,0.894,0.03),"cockpit bounce height");
+    check(stride(pxh,200).blend==1&&near(stride(pxh,200).stepsPerSecond,2)&&near(stride(pxh,-96.3).stepsPerSecond,stride(pxh,96.3).stepsPerSecond),"pure run above run speed; reverse uses the same model");
+    check(near(stride(pxh,7.2).bounceM,pxh.walkBounceM/2)&&stride(pxh,0).bounceM==0,"walk fades in from standing");
+
+    // Predicted bounce and the comfort factor.
+    Settings comfort{};comfort.yawOffsetDeg=0;comfort.heaveLimitG=0;comfort.heaveSafetyNet=false;
+    check(near(smoothing_loss(2,comfort),std::pow(0.5,1.5),1e-6),"three 2 Hz stages at 2 Hz");
+    Settings lighter=comfort;lighter.accelerationHz=0;check(near(smoothing_loss(2,lighter),0.5,1e-6),"a stage set to 0 passes everything");
+    comfort.gait=pxh;
+    check(near(bounce_peak(97.2,comfort)/gravity,4.3,0.1),"Phoenix Hawk at top speed: 4.3 G");
+    check(near(comfort_factor(97.2,comfort),3/(bounce_peak(97.2,comfort)/gravity),1e-9)&&comfort_factor(97.2,comfort)<0.72,"capped to the comfort level");
+    comfort.gait=mauler;check(near(bounce_peak(55.8,comfort)/gravity,1.4,0.05)&&comfort_factor(55.8,comfort)==1,"Mauler stays under the level: untouched");
+    comfort.gait=none;check(bounce_peak(100,comfort)==0&&comfort_factor(100,comfort)==1,"unknown chassis: no cap");
+    comfort.gait=pxh;comfort.heaveComfortG=0;check(comfort_factor(97.2,comfort)==1,"comfort 0 switches the cap off");
+    comfort.heaveComfortG=3;
+    double before=1;bool reached=false,exact=true;
+    for(double kmh=0;kmh<=160;kmh+=0.5) {
+        double k=comfort_factor(kmh,comfort);
+        if(k>before+1e-12||k>1)exact=false;        // never rises with speed, never above 1
+        if(k<1){reached=true;if(!near(bounce_peak(kmh,comfort)*k,3*gravity,1e-9))exact=false;}
+        else if(reached)exact=false;                // once capped it stays capped
+        before=k;
+    }
+    check(reached&&exact,"factor is 1 up to a threshold speed, then holds the bounce at the level");
+    comfort.heaveGain=0.5;check(near(bounce_peak(97.2,comfort)/gravity,2.15,0.05)&&comfort_factor(97.2,comfort)==1,"HeaveGain counts towards the level");
+    comfort.heaveGain=1;
+
+    // The sampler applying it to a cockpit that really bounces. This gait takes two
+    // 2 m steps a second at any speed, so the cockpit bobs 1.5 m at 2 Hz.
+    struct Run {
+        Sampler sampler;Sample s{};double phase{},x{};Frame f{};
+        // Returns the largest heave of the last second.
+        double go(const Settings& c,double kmh,double heightM,double hz,double seconds,int jets=0) {
+            const double dt=1.0/200;double top=0;int n=static_cast<int>(seconds/dt);
+            for(int i=0;i<n;++i) {
+                x+=kmh/3.6*dt;phase+=2*pi*hz*dt;
+                s.valid=s.controlled=true;s.identity=1;s.dt=dt;s.timestampMs+=5;s.jetState=jets;s.jetsInstalled=true;
+                s.position={x,0,heightM/2*std::sin(phase)};
+                f=sampler.update(s,c);
+                if(i>=n-200)top=std::max(top,(double)std::abs(f.LocalAccelerationY));
+            }
+            return top;
+        }
+    };
+    Gait steady{2.0,2.0,1,1,14.4,100.8,2};
+    Settings bob=comfort;bob.gait=steady;bob.heaveComfortG=0;
+    double natural=Run{}.go(bob,72,1.5,2,6);
+    check(near(natural,bounce_peak(72,bob),0.05*natural)&&natural>4*gravity,"the formula matches what the sampler's filters really do");
+    bob.heaveComfortG=3;Run capped3;double held=capped3.go(bob,72,1.5,2,6);
+    check(near(held,3*gravity,0.05*3*gravity)&&near(capped3.f.HeaveFactor,3*gravity/bounce_peak(72,bob),0.01)&&capped3.f.GaitKnown,"bounce held at the comfort level");
+    check(near(capped3.f.GroundSpeedKmh,72,0.5)&&near(capped3.f.BouncePeakG,bounce_peak(72,bob)/gravity,0.05),"diagnostics: ground speed and predicted bounce");
+    bob.heaveComfortG=5;check(near(Run{}.go(bob,72,1.5,2,6),natural,0.01*natural),"a level above the bounce changes nothing");
+    // Jumps and landings stay full: the cap eases off while the jets are busy.
+    bob.heaveComfortG=3;
+    capped3.go(bob,72,1.5,2,1,JetsActive);check(capped3.f.HeaveFactor>0.999,"cap released during a jump");
+    capped3.go(bob,72,1.5,2,0.2,JetsCooldown);check(capped3.f.HeaveFactor>0.999,"still released until the jets are inactive");
+    capped3.go(bob,72,1.5,2,1);check(near(capped3.f.HeaveFactor,3*gravity/bounce_peak(72,bob),0.01),"cap back after landing");
+    // Safety net: an unknown chassis bouncing too hard is eased to 1.25 times the level.
+    Settings net=bob;net.gait=none;net.heaveSafetyNet=true;
+    Run wild;double eased=wild.go(net,72,1.5,2,25);
+    check(near(eased,3.75*gravity,0.08*3.75*gravity)&&wild.f.SafetyGain<0.95&&wild.f.HeaveFactor==1&&!wild.f.GaitKnown,"safety net eases a sustained excess down");
+    wild.go(net,72,0.5,2,25);check(wild.f.SafetyGain>0.97,"and lets go again afterwards");
+    Run brief;brief.go(net,72,0.5,2,5);brief.go(net,72,1.5,2,0.3);check(brief.f.SafetyGain>0.75,"a short burst barely moves it");
+    Settings both=bob;both.heaveSafetyNet=true;Run calm;calm.go(both,72,1.5,2,10);
+    check(calm.f.SafetyGain>0.999,"with the cap working the safety net stays idle");
+    net.heaveSafetyNet=false;check(near(Run{}.go(net,72,1.5,2,6),natural,0.01*natural),"safety net can be switched off");
+
+    // Gait file lines.
+    std::string name;Gait parsed{};
+    check(parse_gait_line(format_gait_line("Phoenixhawk",pxh),name,parsed)&&name=="Phoenixhawk"&&near(parsed.runBounceM,pxh.runBounceM)
+        &&near(parsed.walkSpeedKmh,14.4)&&parsed.stepsPerCycle==2,"gait line round trip");
+    check(!parse_gait_line(kGaitHeader,name,parsed)&&!parse_gait_line("",name,parsed)&&!parse_gait_line("# note",name,parsed),"header and blanks are skipped");
+    check(!parse_gait_line("X,100,200,2,1,2,50,50",name,parsed)&&!parse_gait_line("X,0,0,2,1,2,14.4,100.8",name,parsed)
+        &&!parse_gait_line("X,100,abc,2,1,2,14.4,100.8",name,parsed)&&!parse_gait_line("X,100,99999,2,1,2,14.4,100.8",name,parsed),"bad values are rejected");
+    check(parse_gait_line(" \"Custom\" , 90 , 150 , 2 , 1 , 2 , 14.4 , 100.8 ",name,parsed)&&name=="Custom"&&near(parsed.walkBounceM,0.9),"spaces and quotes are tolerated");
+
+    // Learning the gait of a chassis that is not in the table.
+    Gait truth{1.0,2.0,2,1,14.4,100.8,2},timing{};
+    auto learn=[&](GaitLearner& l,double kmh,double seconds,bool ground,double& angle) {
+        Stride st=stride(truth,kmh);const double dt=1.0/90;
+        for(int i=0;i<static_cast<int>(seconds/dt);++i){angle+=2*pi*st.stepsPerSecond*dt;l.update(dt,8+st.bounceM*0.75/2*std::sin(angle),kmh,ground,timing,0.75);}
+    };
+    GaitLearner learner;double angle=0;
+    check(!learner.ready()&&!learner.gait(timing).known(),"nothing learned yet");
+    learn(learner,30,20,true,angle);learn(learner,90,20,true,angle);
+    Gait learned=learner.gait(timing);
+    check(learner.ready()&&near(learned.walkBounceM,1.0,0.1)&&near(learned.runBounceM,2.0,0.2),"walk and run bounce learned from two speeds");
+    learner.reset();angle=0;learn(learner,90,20,true,angle);learned=learner.gait(timing);
+    check(learner.ready()&&near(stride(learned,90).bounceM,stride(truth,90).bounceM,0.05*stride(truth,90).bounceM),"one speed is enough to predict that speed");
+    learner.reset();angle=0;learn(learner,90,20,false,angle);check(learner.steps()==0,"nothing is learned in the air");
     std::cout<<"All motion tests passed\n";return 0;
 }
