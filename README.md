@@ -75,11 +75,12 @@ that it can have a profile of its own.
    settings. The defaults apply without it.
 
 An optional fifth step gives you four starting motion profiles. The folder
-`simhub\profiles` contains one profile for each vehicle name: `MW5 Slow`,
-`MW5 Standard`, `MW5 Fast` and `MW5 Very Fast`. In SimHub, open the motion
-settings, open the profile list, choose the import function, and select one
-file. Repeat this for the other three files. SimHub then switches between the
-profiles by vehicle name.
+`simhub\profiles` contains one `.shmotionprofile` file for each vehicle name:
+`MW5 Slow`, `MW5 Standard`, `MW5 Fast` and `MW5 Very Fast`. Install the SimHub
+definition from step 3 first. In SimHub, open the motion settings, open the
+profile list, choose the import function, and select one file. Repeat this for
+the other three files. Each profile is already assigned to its vehicle name, so
+SimHub switches between the profiles without further set-up.
 
 These profiles were tuned for one 3DOF platform. Check the motion range and the
 limits of every profile against your own platform before you use it, and start
