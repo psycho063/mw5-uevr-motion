@@ -597,13 +597,13 @@ public:
         hapticSettings.absMinHz=setting(cfg,"MascWarningAbsMinHz",2,0.5,15);
         hapticSettings.absMaxHz=setting(cfg,"MascWarningAbsMaxHz",6,0.5,15);
         hapticSettings.powerEngine=setting(cfg,"PowerVibrationEnable",1,0,1)!=0;
-        hapticSettings.powerUpStart=setting(cfg,"PowerUpStartLevel",0.15,0,1);
-        hapticSettings.powerUpEnd=setting(cfg,"PowerUpEndLevel",0.7,0,1);
-        hapticSettings.powerDownStart=setting(cfg,"PowerDownStartLevel",0.6,0,1);
-        hapticSettings.powerDownEnd=setting(cfg,"PowerDownEndLevel",0.1,0,1);
+        hapticSettings.powerUpStart=setting(cfg,"PowerUpStartLevel",0.45,0,1);
+        hapticSettings.powerUpEnd=setting(cfg,"PowerUpEndLevel",0.85,0,1);
+        hapticSettings.powerDownStart=setting(cfg,"PowerDownStartLevel",0.85,0,1);
+        hapticSettings.powerDownEnd=setting(cfg,"PowerDownEndLevel",0.45,0,1);
         hapticSettings.powerInitSeconds=setting(cfg,"PowerInitSeconds",5,0,60);
         hapticSettings.powerUpSeconds=setting(cfg,"PowerUpSeconds",4,0,60);
-        hapticSettings.powerDownSeconds=setting(cfg,"PowerDownSeconds",3.3,0,60);
+        hapticSettings.powerDownSeconds=setting(cfg,"PowerDownSeconds",3,0,60);
         shakerLogAll=setting(cfg,"DebugShakerEvents",0,0,1)!=0;
         shakerEnabled=hapticSettings.powerEngine||shakerLogAll;
         for(auto old:{"MascVibrationMinLevel","MascVibrationMaxLevel"})if(lookup(cfg,old))API::get()->log_warn("[MW5 Motion] %s is no longer used; see MascVibrationStartLevel and MascVibrationDamageLevel",old);

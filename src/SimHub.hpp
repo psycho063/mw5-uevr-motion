@@ -34,8 +34,8 @@ struct HapticSettings {
     // the other way on shutdown. The phases arrive as MechShaker "Powering" events
     // (MechWarriorVR with the MechShakerRelay mod); without them nothing plays.
     bool powerEngine{true};
-    double powerUpStart{0.15}, powerUpEnd{0.7}, powerDownStart{0.6}, powerDownEnd{0.1};
-    double powerInitSeconds{5}, powerUpSeconds{4}, powerDownSeconds{3.3};
+    double powerUpStart{0.45}, powerUpEnd{0.85}, powerDownStart{0.85}, powerDownEnd{0.45};
+    double powerInitSeconds{5}, powerUpSeconds{4}, powerDownSeconds{3};
 };
 // The phase a MechShaker "Powering" event carries in its first value.
 enum PowerPhase : int { PowerInitialising=0, PowerUp=1, PowerDown=2 };

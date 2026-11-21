@@ -197,7 +197,7 @@ int main(){
     check(near(stride(pxh,7.2).bounceM,pxh.walkBounceM/2)&&stride(pxh,0).bounceM==0,"walk fades in from standing");
 
     // Predicted bounce and the comfort factor.
-    Settings comfort{};comfort.yawOffsetDeg=0;comfort.heaveLimitG=0;comfort.heaveSafetyNet=false;
+    Settings comfort{};comfort.yawOffsetDeg=0;comfort.heaveLimitG=0;comfort.heaveSafetyNet=false;comfort.heaveComfortG=3;
     check(near(smoothing_loss(2,comfort),std::pow(0.5,1.5),1e-6),"three 2 Hz stages at 2 Hz");
     Settings lighter=comfort;lighter.accelerationHz=0;check(near(smoothing_loss(2,lighter),0.5,1e-6),"a stage set to 0 passes everything");
     comfort.gait=pxh;
@@ -285,6 +285,9 @@ int main(){
 
     // Power-up and shutdown vibration, started by MechShaker "Powering" events.
     HapticSettings ps{};HapticState power{};Frame on{};
+    // Fixed levels and lengths, so the checks do not depend on the shipped defaults.
+    ps.powerUpStart=0.15;ps.powerUpEnd=0.7;ps.powerDownStart=0.6;ps.powerDownEnd=0.1;
+    ps.powerInitSeconds=5;ps.powerUpSeconds=4;ps.powerDownSeconds=3.3;
     on.OutputActive=on.FrameValid=1;on.DeltaTime=0.1f;
     auto rpm_after=[&](int updates){for(int i=0;i<updates;++i)power.update(on,ps);return power.rpm;};
     check(rpm_after(1)==0,"no vibration without an event");

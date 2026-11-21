@@ -63,14 +63,15 @@ that it can have a profile of its own.
 
 ## Installing takes four steps
 
-1. Close the game.
-2. Copy `dist\plugins\MW5Motion.dll` to
+1. Download the zip file of the latest release from the Releases page, extract it,
+   and close the game.
+2. Copy `plugins\MW5Motion.dll` to
    `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping\plugins`.
-3. Copy `dist\simhub\MechWarrior5.simdef` to
+3. Copy `simhub\MechWarrior5.simdef` to
    `%LOCALAPPDATA%\SimHub\ExternalSims\Definitions\MechWarrior5`, and restart
    SimHub. The game appears as "MechWarrior 5 Mercenaries (UEVR)" on UDP port
    20779. SimHub 9.11.5 or later is required.
-4. Copy `dist\mw5_motion.cfg` to
+4. Copy `mw5_motion.cfg` to
    `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping` if you want to change
    settings. The defaults apply without it.
 
@@ -152,7 +153,8 @@ a mech, and `"vehicleName"` and `"chassis"` show the mech that was found.
 ## Building requires Visual Studio 2022
 
 Install Visual Studio 2022 with the C++ and CMake components, and run this
-command. It builds the plugin, runs the unit tests and fills `dist\`.
+command. It builds the plugin, runs the unit tests and fills `dist\`. The script
+`Package.ps1` also writes the release zip file to `release\`.
 
 ```powershell
 .\Build.ps1
