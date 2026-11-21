@@ -29,25 +29,52 @@ struct HapticSettings {
     // its own top rate (about 15/s) for as long as it stayed set.
     double absMinHz{2}, absMaxHz{6};
     double absTapSeconds{0.03}; // long enough for SimHub to sample each tap
+    // The mech powering up or down is an engine vibration as well: a ramp that
+    // climbs from a rough low RPM to a smooth high one on start-up, and winds down
+    // the other way on shutdown. The phases arrive as MechShaker "Powering" events
+    // (MechWarriorVR with the MechShakerRelay mod); without them nothing plays.
+    bool powerEngine{true};
+    double powerUpStart{0.15}, powerUpEnd{0.7}, powerDownStart{0.6}, powerDownEnd{0.1};
+    double powerInitSeconds{5}, powerUpSeconds{4}, powerDownSeconds{3.3};
 };
+// The phase a MechShaker "Powering" event carries in its first value.
+enum PowerPhase : int { PowerInitialising=0, PowerUp=1, PowerDown=2 };
 struct HapticState {
     bool mascGear{}, absActive{};
     double rpm{}, phase{};
+    int powerPhase{-1};       // PowerPhase while a ramp plays, otherwise -1
+    double powerElapsed{};
+    // A "Powering" event arrived: start that ramp, replacing any still playing.
+    void power_event(int phaseCode) {
+        if(phaseCode<PowerInitialising||phaseCode>PowerDown)return;
+        powerPhase=phaseCode;powerElapsed=0;
+    }
     // Call once per new frame, on the thread that builds the packets.
     void update(const Frame& f,const HapticSettings& cfg) {
         if(!f.OutputActive) {
             // The gear holds through pauses and discontinuities: no shift pulse on resume.
-            if(!f.FrameValid)mascGear=false;
+            // A power ramp waits through a pause and is dropped when the mech is gone.
+            if(!f.FrameValid){mascGear=false;powerPhase=-1;}
             absActive=false;rpm=phase=0;return;
         }
         mascGear=f.MascEngaged!=0;
+        double ramp=0;
+        if(powerPhase>=0) {
+            double length=powerPhase==PowerInitialising?cfg.powerInitSeconds:powerPhase==PowerUp?cfg.powerUpSeconds:cfg.powerDownSeconds;
+            if(length<=0||powerElapsed>=length)powerPhase=-1;
+            else {
+                double from=powerPhase==PowerDown?cfg.powerDownStart:cfg.powerUpStart,to=powerPhase==PowerDown?cfg.powerDownEnd:cfg.powerUpEnd;
+                ramp=cfg.engineMaxRpm*(from+(to-from)*powerElapsed/length);
+                powerElapsed+=f.DeltaTime;
+            }
+        }
         if(f.JumpJetState==JetsActive)rpm=cfg.engineMaxRpm*cfg.jetLevel;
         else if(f.JumpJetState==JetsWarmup)rpm=cfg.engineMaxRpm*cfg.jetWarmupLevel;
         else if(cfg.mascEngine&&f.MascEngaged) {
             double fill=f.MascDamagePoint>0?std::clamp(f.MascGauge/f.MascDamagePoint,0.0f,1.0f):0;
             rpm=cfg.engineMaxRpm*(cfg.mascRpmStart+(cfg.mascRpmDamage-cfg.mascRpmStart)*fill);
         }
-        else rpm=0;
+        else rpm=cfg.powerEngine?ramp:0;
         bool warned=f.MascInstalled&&f.MascEngaged&&f.MascWarningPoint>0&&f.MascGauge>=f.MascWarningPoint;
         if(!warned){absActive=false;phase=0;return;}
         double span=f.MascDamagePoint-f.MascWarningPoint;

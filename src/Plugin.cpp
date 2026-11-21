@@ -6,6 +6,7 @@
 #include "SimHub.hpp"
 #include "Gait.hpp"
 #include "GaitTable.hpp"
+#include "ShakerBuffer.hpp"
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -23,7 +24,7 @@
 using API=uevr::API;
 using Object=API::UObject;
 namespace {
-constexpr const char* kVersion="0.7.1";
+constexpr const char* kVersion="0.8.0";
 // Set when GaitLearning is on: the reader then also fetches the mech's root
 // transform. Off by default, and nothing of the learner runs while it is off.
 std::atomic_bool g_learning{false};
@@ -242,6 +243,45 @@ struct Feed {
     }
     void close(){if(socket!=INVALID_SOCKET)closesocket(socket);socket=INVALID_SOCKET;}
 };
+// Read-only view of MechWarriorVR's MechShaker event buffer. It exists only when
+// MechWarriorVR's bridge and the MechShakerRelay mod are running, and may appear
+// some time after this plugin starts, so opening is retried.
+struct ShakerReader {
+    HANDLE mapping{};const uint8_t* view{};int64_t seen{};uint64_t nextTry{};
+    bool open(uint64_t now) {
+        if(view)return true;
+        if(now<nextTry)return false;
+        nextTry=now+3000;
+        mapping=OpenFileMappingW(FILE_MAP_READ,FALSE,mw5::kShakerMemoryName);
+        if(!mapping)return false;
+        view=static_cast<const uint8_t*>(MapViewOfFile(mapping,FILE_MAP_READ,0,0,mw5::kShakerMemoryBytes));
+        if(!view){CloseHandle(mapping);mapping=nullptr;return false;}
+        mw5::ShakerControl control;std::memcpy(&control,view,sizeof(control));
+        seen=control.packetNumber; // skip whatever happened before we looked
+        return true;
+    }
+    void close() {
+        if(view)UnmapViewOfFile(view);
+        if(mapping)CloseHandle(mapping);
+        view=nullptr;mapping=nullptr;
+    }
+    // Calls `handle` for every event that arrived since the last poll, oldest first.
+    template<class Handler> void poll(uint64_t now,Handler&& handle) {
+        if(!open(now))return;
+        mw5::ShakerControl control;std::memcpy(&control,view,sizeof(control));
+        if(control.packetNumber<seen)seen=control.packetNumber; // the writer started over
+        auto span=mw5::shaker_new_events(seen,control);
+        seen=control.packetNumber;
+        bool closed=false;
+        for(int i=0;i<span.count;++i) {
+            mw5::ShakerEvent e;
+            std::memcpy(&e,view+sizeof(control)+sizeof(e)*static_cast<size_t>((span.first+i)%mw5::kShakerSlots),sizeof(e));
+            if(e.code==mw5::ShakerBridgeClosed)closed=true;
+            else handle(e);
+        }
+        if(closed){close();nextTry=now+3000;} // the bridge went away; look for a new one later
+    }
+};
 std::string lower(std::string s) { for(auto& c:s)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));return s; }
 std::string trim(std::string s) {
     auto a=s.find_first_not_of(" \t\r\n");auto b=s.find_last_not_of(" \t\r\n");
@@ -304,6 +344,7 @@ class MW5Motion final:public uevr::Plugin {
     Feed external{true,"127.0.0.1",20779,120}; // SimHub External Sim
     Feed debug{false,"127.0.0.1",20780,60};    // JSON copy of each frame, for tools
     uint64_t emitterId{},lastStatus{};
+    ShakerReader shaker;bool shakerEnabled{true},shakerLogAll{};
     // Debug recording, sender thread only.
     std::ofstream rows,events;int rowHz{20};
     uint64_t started{},nextRow{},recorded{},lastFaults{};
@@ -489,6 +530,7 @@ class MW5Motion final:public uevr::Plugin {
                 // Learned gaits; disk I/O stays on this thread.
                 std::ofstream out(profile/L"mw5_mech_gait.csv",std::ios::trunc);out<<gaitText;
             }
+            poll_shaker(now);
             // A frozen game thread must not leave the last cues standing.
             bool stale=!tick||now-tick>250;
             if(stale)f=mw5::neutral(f,true);
@@ -501,9 +543,27 @@ class MW5Motion final:public uevr::Plugin {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
+    // Sender thread. Events MechWarriorVR publishes for MechShaker; here they
+    // start the power-up and shutdown vibration.
+    void poll_shaker(uint64_t now) {
+        if(!shakerEnabled)return;
+        bool wasOpen=shaker.view!=nullptr;
+        shaker.poll(now,[&](const mw5::ShakerEvent& e) {
+            if(shakerLogAll&&events.is_open()) {
+                char line[200];
+                snprintf(line,sizeof(line),"MechShaker event %d: int %d, floats %.3f %.3f %.3f %.3f %.3f %.3f",e.code,e.int0,e.f[0],e.f[1],e.f[2],e.f[3],e.f[4],e.f[5]);
+                event(now,line);
+            }
+            if(e.code!=mw5::ShakerPowering)return;
+            haptics.power_event(e.int0);
+            static const char* phases[]={"initialising","powering up","shutting down"};
+            if(events.is_open())event(now,std::string("mech power: ")+(e.int0>=0&&e.int0<=2?phases[e.int0]:"unknown phase"));
+        });
+        if(!wasOpen&&shaker.view&&events.is_open())event(now,"MechShaker event buffer found: power-up and shutdown vibration available");
+    }
 public:
     ~MW5Motion() override {
-        stop=true;if(worker.joinable())worker.join();external.close();debug.close();
+        stop=true;if(worker.joinable())worker.join();external.close();debug.close();shaker.close();
     }
     void on_initialize() override {
         if(initialized.exchange(true))return;
@@ -536,6 +596,16 @@ public:
         hapticSettings.abs=setting(cfg,"MascWarningAbsEnable",1,0,1)!=0;
         hapticSettings.absMinHz=setting(cfg,"MascWarningAbsMinHz",2,0.5,15);
         hapticSettings.absMaxHz=setting(cfg,"MascWarningAbsMaxHz",6,0.5,15);
+        hapticSettings.powerEngine=setting(cfg,"PowerVibrationEnable",1,0,1)!=0;
+        hapticSettings.powerUpStart=setting(cfg,"PowerUpStartLevel",0.15,0,1);
+        hapticSettings.powerUpEnd=setting(cfg,"PowerUpEndLevel",0.7,0,1);
+        hapticSettings.powerDownStart=setting(cfg,"PowerDownStartLevel",0.6,0,1);
+        hapticSettings.powerDownEnd=setting(cfg,"PowerDownEndLevel",0.1,0,1);
+        hapticSettings.powerInitSeconds=setting(cfg,"PowerInitSeconds",5,0,60);
+        hapticSettings.powerUpSeconds=setting(cfg,"PowerUpSeconds",4,0,60);
+        hapticSettings.powerDownSeconds=setting(cfg,"PowerDownSeconds",3.3,0,60);
+        shakerLogAll=setting(cfg,"DebugShakerEvents",0,0,1)!=0;
+        shakerEnabled=hapticSettings.powerEngine||shakerLogAll;
         for(auto old:{"MascVibrationMinLevel","MascVibrationMaxLevel"})if(lookup(cfg,old))API::get()->log_warn("[MW5 Motion] %s is no longer used; see MascVibrationStartLevel and MascVibrationDamageLevel",old);
         profiles.specificChassis=list(cfg,"SpecificChassis");
         if(auto limits=list(cfg,"SpeedBandLimitsKmh");!limits.empty()) {

@@ -1,201 +1,199 @@
 # MW5 Motion
 
-A [UEVR](https://github.com/praydog/UEVR) plugin that sends motion and haptic
-telemetry from MechWarrior 5: Mercenaries to [SimHub](https://www.simhubdash.com/),
-for motion platforms.
+MW5 Motion is a [UEVR](https://github.com/praydog/UEVR) plugin that sends motion
+and haptic effects from MechWarrior 5: Mercenaries to
+[SimHub](https://www.simhubdash.com/) for motion platforms.
 
-**Status: v0.7.1, work in progress.** Motion, the SimHub effects and automatic
-profile switching have been used on a 3DOF platform. The comfort cap on the
-running bounce is new in this version: its formula was checked against recorded
-missions, but the cap itself has so far only run in unit tests.
+The current version is 0.8.0, and the plugin is still in development. It was
+tested on one 3DOF platform with the MechWarriorVR mod. The plugin needs no MW5
+mod and works with or without mods such as YetAnotherMechlab.
 
-No MW5 mod is needed. The plugin reads base-game classes only, so it works with
-or without mods such as YetAnotherMechlab. It is meant to be used with the
-MechWarriorVR mod's UEVR profile.
+## You use this plugin at your own risk
 
-## What SimHub receives
+**Motion platforms can cause serious injury and damage to property.** This
+plugin controls the movement of a machine that carries a person. A software
+error, a wrong setting or an unexpected event in the game can cause sudden and
+violent movement.
 
-| SimHub | From the game |
+- You alone are **responsible for the safe use** of your platform and for
+  everyone who is near it.
+- You should keep an **emergency stop within reach** and keep people, pets and
+  objects away from the platform while it moves.
+- You should **start with low gains and low limits** in SimHub and raise them in
+  small steps.
+- You should **test every new version and every changed setting** at low
+  strength before normal use.
+- You should **not use the plugin** if you are pregnant or have a heart, back or
+  neck condition, or any condition that sudden movement could make worse.
+
+This software is provided "as is", without warranty of any kind. To the fullest
+extent that the law allows, the authors and contributors accept no liability for
+any injury, death, damage or loss that results from its use. The full terms are
+in the [LICENSE](LICENSE) file. If you do not accept these terms, do not use the
+software.
+
+## The plugin sends motion and four kinds of effect to SimHub
+
+| SimHub | Source in the game |
 | --- | --- |
-| Motion: pitch, roll, yaw, surge, sway, heave | Movement of the cockpit, including torso twist and aiming up or down |
-| Gear Change effect | MASC or supercharger switched on (gear 1 → 2) or off (2 → 1) |
-| Engine Vibrations effect | Jump jets: 40% RPM during warm-up, 80% while firing. MASC running: 90% falling to 50% as the gauge fills, which feels rougher as it nears damage |
-| ABS effect | MASC warning while MASC is on: 2 taps a second from the game's warning point, rising to 6 at the damage point; never held on. Can be switched off |
-| Vehicle name | A speed band or the chassis, used to pick a motion profile |
+| Motion | The movement of the cockpit, with torso twist and aiming up or down |
+| Gear Change effect | MASC or a supercharger switches on or off |
+| Engine Vibrations effect | Jump jets, running MASC, power-up and shutdown |
+| ABS effect | Short warning taps while MASC is close to damage |
+| Vehicle name | A speed band or the chassis, which selects the motion profile |
 
-The gauge thresholds are read from the game for the fitted MASC or supercharger.
-Extra values (MASC gauge, jump jet state, heat, chassis, variant and more) are
-sent as custom properties for dashboards and custom effects.
+The MASC vibration becomes rougher as the gauge fills. The warning taps become
+faster from the warning point of the game to the damage point. The power-up and
+shutdown vibrations need MechWarriorVR with the MechShakerRelay mod.
 
-The game exposes no velocities for the cockpit. The plugin derives velocity,
-acceleration and rotation rates from the cockpit transform and smooths them with
-time-based low-pass filters, so the result does not depend on the frame rate.
+SimHub also receives the MASC gauge, the jump jet state, heat, chassis and
+variant as custom properties for dashboards.
 
-### Vehicle names
+## SimHub selects a motion profile by vehicle name
 
-| Name | Top speed without MASC |
+| Vehicle name | Top speed without MASC |
 | --- | --- |
 | `MW5 Slow` | up to 60 km/h |
 | `MW5 Standard` | 61 to 75 km/h |
 | `MW5 Fast` | 76 to 100 km/h |
 | `MW5 Very Fast` | over 100 km/h |
 
-Chassis listed under `SpecificChassis` in the configuration are reported as
-`MW5 <Chassis>` instead, so they can have a motion profile of their own. The name
-is chosen once per mech and does not change during a mission.
+A chassis that is listed under `SpecificChassis` is sent as `MW5 <Chassis>`, so
+that it can have a profile of its own.
 
-## Build
+## Installing takes four steps
 
-Requires Visual Studio 2022 with the C++ and CMake components.
+1. Close the game.
+2. Copy `dist\plugins\MW5Motion.dll` to
+   `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping\plugins`.
+3. Copy `dist\simhub\MechWarrior5.simdef` to
+   `%LOCALAPPDATA%\SimHub\ExternalSims\Definitions\MechWarrior5`, and restart
+   SimHub. The game appears as "MechWarrior 5 Mercenaries (UEVR)" on UDP port
+   20779. SimHub 9.11.5 or later is required.
+4. Copy `dist\mw5_motion.cfg` to
+   `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping` if you want to change
+   settings. The defaults apply without it.
+
+An optional fifth step gives you four starting motion profiles. The folder
+`simhub\profiles` contains one profile for each vehicle name: `MW5 Slow`,
+`MW5 Standard`, `MW5 Fast` and `MW5 Very Fast`. In SimHub, open the motion
+settings, open the profile list, choose the import function, and select one
+file. Repeat this for the other three files. SimHub then switches between the
+profiles by vehicle name.
+
+These profiles were tuned for one 3DOF platform. Check the motion range and the
+limits of every profile against your own platform before you use it, and start
+with low gains.
+
+Remove SpaceMonkey's UEVR plugin first, because SimHub can use only one game at
+a time. To remove MW5 Motion, close the game and delete the DLL.
+
+## The configuration file explains every setting
+
+Each setting in [mw5_motion.cfg](mw5_motion.cfg) has a comment that states what a
+higher and a lower value does. These settings matter most:
+
+| Setting | Higher value | Lower value |
+| --- | --- | --- |
+| `HeaveComfortG` | Running bounces harder | Running is softer, and the cap starts at a lower speed |
+| `HeaveGain` | All vertical motion is stronger | All vertical motion is weaker |
+| `HeaveLimitG` | Jumps and landings hit harder | Jumps and landings are softer |
+| `...SmoothingHz` | Motion reacts faster with more jitter | Motion is smoother but slower |
+
+A `[Chassis]` block at the end of the file changes motion settings for one
+chassis:
+
+```ini
+[Phoenixhawk]
+HeaveComfortG = 2.5
+```
+
+## The comfort cap limits the running bounce of every mech
+
+Fast mechs with a tall stride bounce the cockpit much harder than slow mechs. At
+top speed a Mauler sends about 1.4 G, and a Phoenix Hawk sends about 4.3 G. The
+plugin calculates the bounce of each mech and scales the vertical force, so that
+no mech exceeds `HeaveComfortG`.
+
+- The cap **follows the current speed**. The bounce is unchanged at low speed
+  and is held at the comfort level above the speed where the mech reaches it.
+- The cap **works per chassis**. All variants share the animations of their
+  chassis and differ only in speed, which is measured during play.
+- The cap **does not limit jumps and landings**. It fades out while the jump
+  jets are in use.
+- A **safety net** slowly reduces any bounce that stays above 1.25 times the
+  comfort level. It covers mechs without data and limping mechs.
+
+Bounce data for 103 chassis is built in. For a modded chassis, set
+`GaitLearning = 1`, and the plugin measures the bounce while you walk and run.
+You can also add a row to `mw5_mech_gait.csv` in the UEVR profile folder, in the
+format of `data/mech_gait.csv`. Rows in that file replace the built-in data.
+
+## The status file shows whether the plugin works
+
+While the game runs, the plugin writes `mw5_motion_status.json` to the UEVR
+profile folder once per second. The value of `"reader"` is `ok` while you are in
+a mech, and `"vehicleName"` and `"chassis"` show the mech that was found.
+
+`DebugLog = 1` records a whole session to two files in the profile folder:
+
+| File | Contents |
+| --- | --- |
+| `mw5_motion_debug.csv` | The motion values and the values that were sent to SimHub, 20 rows per second |
+| `mw5_motion_debug.log` | Events with a time stamp, such as the mech found, MASC changes and motion resets |
+
+## Building requires Visual Studio 2022
+
+Install Visual Studio 2022 with the C++ and CMake components, and run this
+command. It builds the plugin, runs the unit tests and fills `dist\`.
 
 ```powershell
 .\Build.ps1
 ```
 
-This builds the plugin, runs the unit tests and fills `dist\`.
+## A changed SimHub definition needs a rebuild
 
-## Install
-
-1. Close the game.
-2. Copy `dist\plugins\MW5Motion.dll` to
-   `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping\plugins`.
-3. Optional: copy `dist\mw5_motion.cfg` to
-   `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping`. Without it the defaults apply.
-4. Import `dist\simhub\MechWarrior5.simdef` into SimHub as an External Sim game
-   (SimHub 9.11.5 or later; see the
-   [External Sim documentation](https://manual.simhubdash.com/external-sim-integration)).
-   The game appears as "MechWarrior 5 Mercenaries (UEVR)" on UDP port 20779.
-
-Do not run this plugin together with SpaceMonkey's UEVR plugin for the same
-purpose; SimHub reads one game at a time.
-
-To remove the plugin, close the game and delete the DLL.
-
-## Configuration
-
-See the comments in [mw5_motion.cfg](mw5_motion.cfg). The settings worth knowing:
-
-- **`HeaveComfortG`** (default 3): the most running bounce any mech may send, as
-  a peak in G. See the next section.
-- **`HeaveGain`** and **`HeaveLimitG`**: an overall scale for the vertical force,
-  and a soft ceiling for everything that is not running bounce, such as jumps.
-- **Per-chassis overrides.** A `[Chassis]` block at the end of the file overrides
-  motion settings for one chassis, for example:
-
-  ```ini
-  [Phoenixhawk]
-  HeaveComfortG = 2.5
-  ```
-
-## Comfort cap on the running bounce
-
-Fast mechs with a tall stride bounce the cockpit several times harder than slow
-ones: at top speed a Mauler sends about 1.4 G and a Phoenix Hawk about 4.3 G.
-The plugin predicts the bounce and scales the vertical force so that no mech
-exceeds `HeaveComfortG`.
-
-- **It follows speed.** The game cross-fades each chassis's walk and run
-  animation by ground speed. From the bounce height of the two animations and
-  the mech's current speed the plugin works out the step rate and how hard the
-  bounce is. Below the speed where a mech reaches the comfort level its bounce is
-  untouched; above it the bounce is held at the level. Mechs that never reach it
-  are never changed.
-- **Per chassis, not per variant.** Variants and engine swaps share a chassis's
-  animations and differ only in speed, which is read live.
-- **Jumps and landings are not capped.** The cap eases off while the jump jets
-  are busy.
-- **Safety net.** For anything the prediction cannot cover (a chassis without
-  data, a limping mech), a slow limiter eases the vertical force down while it
-  stays above 1.25 times the comfort level. `HeaveSafetyNet = 0` turns it off.
-
-The bounce data for 103 chassis is built in (`data/mech_gait.csv`, generated from
-the game's first-person walk and run animations). The prediction was checked
-against recorded missions for nine chassis: step rate to within about 0.05 steps
-per second, and the vertical force sent to SimHub to within about 10%.
-
-For a chassis that is not covered, such as a modded mech:
-
-- add a row for it to `mw5_mech_gait.csv` in the UEVR profile folder, in the same
-  format as `data/mech_gait.csv`; or
-- set `GaitLearning = 1`, and the plugin measures the cockpit's bob while you walk
-  and run in that mech and writes the row itself. It is off by default and does
-  nothing for chassis that already have data.
-
-Rows in `mw5_mech_gait.csv` take precedence over the built-in table.
-
-## Checking that it works
-
-While the game runs, the plugin rewrites
-`%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping\mw5_motion_status.json` once per
-second. `"reader"` says what the plugin currently sees (`ok` in a mech),
-`"vehicleName"` and `"chassis"` show the mech's identity, and `"frame"` holds the
-latest values.
-
-### Debug recording
-
-Set `DebugLog = 1` in the configuration to record a whole session. Two files are
-written to the profile folder and restarted each time the game starts:
-
-| File | Contents |
-| --- | --- |
-| `mw5_motion_debug.csv` | Samples: position, angles, rates, velocities, accelerations, speed, MASC and jump jet state, the gear, ABS and RPM values sent to SimHub, and the comfort cap's ground speed, predicted bounce, factor and safety-net gain. `DebugLogRateHz` rows per second (default 20); recording stops at 50 MB. |
-| `mw5_motion_debug.log` | Timestamped events: mech found, vehicle name chosen, which bounce data is used and from what speed the cap acts, MASC and jump jet changes, pauses, motion resets, read failures. |
-
-Set `DebugJsonEnable = 1` to also receive every frame as JSON over UDP
-(port 20780 by default), for live tools.
-
-## Changing the SimHub definition
-
-`simhub\MechWarrior5.simdef` defines the packet. After editing its field list,
-regenerate the packet layout with Windows PowerShell 5.1 and a folder containing
-SimHub's `SimHub.Plugins.dll` and its dependencies, then rebuild:
+The file `simhub\MechWarrior5.simdef` defines the packet. After you edit its
+field list, run these commands with Windows PowerShell 5.1. The folder must
+contain `SimHub.Plugins.dll` and its dependencies.
 
 ```powershell
 powershell.exe -File tools\Generate-SimHub.ps1 -SimHubDirectory <folder>
 .\Build.ps1
 ```
 
-A changed definition has a new telemetry signature, so install the rebuilt DLL
-and the `.simdef` together.
+Install the rebuilt DLL and the `.simdef` together, because a changed definition
+has a new telemetry signature.
 
-```text
-UniqueId: 27a2e5cd-aa4c-431e-8c6e-d9a5dcd9f71f
-GameSignature: 0xEB0A2F3D
-TelemetrySignature: 0xD77B2249
-Layout: 2.1
-Packet length: 644
-```
-
-## Layout
+## The source is split by task
 
 | Path | Contents |
 | --- | --- |
-| `src/Telemetry.*` | Motion maths and the comfort cap; no game or UEVR dependency |
-| `src/Gait.*`, `src/GaitTable.hpp` | Bounce data per chassis (generated table, file format) and the optional learner |
-| `data/mech_gait.csv` | The bounce table in reviewable form |
-| `src/SimHub.hpp` | Haptic mapping, vehicle naming and the SimHub packet |
-| `src/SimHubGenerated.hpp` | Packet layout, extracted from SimHub's generated sender |
-| `src/Plugin.cpp` | UEVR plugin: game reader, configuration, sender, status and debug output |
-| `simhub/` | SimHub External Sim definition and SimHub's generated reference sender |
-| `tests/` | Unit tests for the motion maths, comfort cap, haptics and naming |
-| `tools/Generate-SimHub.ps1` | Regenerates the packet layout from the definition |
-| `tools/read_animations.py`, `read_blendspaces.py`, `summarise_animations.awk`, `make_gait_table.awk`, `extract_mech_stats.ps1` | Rebuild the bounce table from the game's animations with the MW5 mod editor |
-| `vendor/uevr/` | UEVR plugin SDK headers (MIT, unchanged) |
+| `src/Telemetry.*` | Motion calculations and the comfort cap |
+| `src/Gait.*`, `src/GaitTable.hpp`, `data/mech_gait.csv` | Bounce data per chassis and the optional measuring |
+| `src/SimHub.hpp`, `src/SimHubGenerated.hpp` | Effects, vehicle names and the SimHub packet |
+| `src/ShakerBuffer.hpp` | The event buffer of MechWarriorVR, which supplies the power events |
+| `src/Plugin.cpp` | The UEVR plugin: game reader, configuration, sender and debug output |
+| `simhub/` | The SimHub definition and the four starting motion profiles |
+| `tests/` | Unit tests |
+| `tools/` | Scripts that rebuild the packet layout and the bounce table |
+| `vendor/uevr/` | UEVR plugin SDK headers |
 
 ## Credits
 
-- Inspired by, and with parts adapted from,
+- This plugin was inspired by
   [galactic-racer-uevr-motion](https://github.com/elliotttate/galactic-racer-uevr-motion)
-  by elliotttate: the idea of a UEVR plugin that feeds SimHub directly, and the
-  starting point for the configuration reader, UDP sender and packet building.
-  The game reader, the motion maths and the SimHub definition are specific to
+  by elliotttate, and parts of it were adapted from that project. The game
+  reader, the motion calculations and the SimHub definition are specific to
   MechWarrior 5.
-- [UEVR](https://github.com/praydog/UEVR) by praydog, and the
-  [MechWarriorVR](https://www.nexusmods.com/mechwarrior5mercenaries/mods/1009) mod
-  and [MW5-UEVR-Plugins](https://github.com/sicsix/MW5-UEVR-Plugins) by sicsix,
-  whose cockpit component this plugin follows.
+- The starting SimHub profiles in `simhub\profiles` are based on the great work
+  of [@LimitlessHorizonVRSimrigs](https://www.youtube.com/@LimitlessHorizonVRSimrigs).
+- [UEVR](https://github.com/praydog/UEVR) was made by praydog.
+- The [MechWarriorVR](https://www.nexusmods.com/mechwarrior5mercenaries/mods/1009)
+  mod and [MW5-UEVR-Plugins](https://github.com/sicsix/MW5-UEVR-Plugins) were made
+  by sicsix. This plugin follows the cockpit component of that mod.
 
 ## Licence
 
-MIT; see [LICENSE](LICENSE). The UEVR headers in `vendor/uevr/` keep their own
-MIT notices.
+The plugin is released under the MIT licence, which is in the [LICENSE](LICENSE)
+file. The UEVR headers in `vendor/uevr/` keep their own MIT notices.

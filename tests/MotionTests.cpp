@@ -1,6 +1,7 @@
 #include "Telemetry.hpp"
 #include "SimHub.hpp"
 #include "Gait.hpp"
+#include "ShakerBuffer.hpp"
 #include <cstddef>
 #include <cstring>
 #include <cmath>
@@ -281,5 +282,40 @@ int main(){
     learner.reset();angle=0;learn(learner,90,20,true,angle);learned=learner.gait(timing);
     check(learner.ready()&&near(stride(learned,90).bounceM,stride(truth,90).bounceM,0.05*stride(truth,90).bounceM),"one speed is enough to predict that speed");
     learner.reset();angle=0;learn(learner,90,20,false,angle);check(learner.steps()==0,"nothing is learned in the air");
+
+    // Power-up and shutdown vibration, started by MechShaker "Powering" events.
+    HapticSettings ps{};HapticState power{};Frame on{};
+    on.OutputActive=on.FrameValid=1;on.DeltaTime=0.1f;
+    auto rpm_after=[&](int updates){for(int i=0;i<updates;++i)power.update(on,ps);return power.rpm;};
+    check(rpm_after(1)==0,"no vibration without an event");
+    power.power_event(PowerUp);
+    check(near(rpm_after(1),1500,1),"power-up starts low and rough");
+    check(near(rpm_after(20),0.15*10000+0.55*10000*2.0/4,60),"and climbs");
+    check(rpm_after(19)>6000&&power.rpm<7000,"to a smooth buzz at the end");
+    check(rpm_after(2)==0&&power.powerPhase==-1,"then stops");
+    power.power_event(PowerDown);double first=rpm_after(1),later=rpm_after(15);
+    check(near(first,6000,1)&&later<first&&later>1000,"shutdown winds down");
+    check(rpm_after(20)==0,"and stops after its length");
+    power.power_event(PowerInitialising);rpm_after(45);check(power.rpm>5000,"initialising runs for its own, longer time");
+    check(rpm_after(6)==0,"and ends");
+    power.power_event(PowerUp);rpm_after(5);
+    on.JumpJetState=JetsActive;check(near(rpm_after(1),8000),"jump jets take over from a power ramp");
+    on.JumpJetState=0;on.MascEngaged=1;on.MascDamagePoint=0.75f;check(near(rpm_after(1),9000),"so does MASC");
+    on.MascEngaged=0;
+    power.power_event(PowerUp);rpm_after(10);double waited=power.powerElapsed;
+    on.OutputActive=0;check(rpm_after(5)==0&&power.powerElapsed==waited&&power.powerPhase==PowerUp,"a pause holds the ramp");
+    on.OutputActive=1;check(rpm_after(1)>1500,"and it carries on afterwards");
+    on.OutputActive=on.FrameValid=0;rpm_after(1);check(power.powerPhase==-1,"leaving the mech drops it");
+    on.OutputActive=on.FrameValid=1;
+    power.power_event(7);power.power_event(-1);check(rpm_after(1)==0,"unknown phases are ignored");
+    ps.powerEngine=false;power.power_event(PowerUp);check(rpm_after(1)==0,"PowerVibrationEnable 0 switches it off");
+
+    // Which slots of MechWarriorVR's event ring are new.
+    auto ring=shaker_new_events(10,ShakerControl{12,13});
+    check(ring.first==10&&ring.count==3,"three new events, oldest first");
+    ring=shaker_new_events(126,ShakerControl{1,130});check(ring.first==126&&ring.count==4,"wraps round the ring");
+    ring=shaker_new_events(0,ShakerControl{5,1000});check(ring.first==6&&ring.count==kShakerSlots,"after an overrun only the newest ring-full is left");
+    check(shaker_new_events(13,ShakerControl{12,13}).count==0&&shaker_new_events(20,ShakerControl{12,13}).count==0,"nothing new");
+    check(shaker_new_events(0,ShakerControl{500,3}).count==0&&shaker_new_events(0,ShakerControl{-1,3}).count==0,"a nonsense write index is ignored");
     std::cout<<"All motion tests passed\n";return 0;
 }
