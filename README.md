@@ -1,10 +1,10 @@
 # MW5 Motion
 
-MW5 Motion is a [UEVR](https://github.com/praydog/UEVR) plugin that sends motion
+MW5 Motion is a [UEVR](https://github.com/praydog/UEVR) plugin that sends motion telemetryb
 and haptic effects from MechWarrior 5: Mercenaries to
 [SimHub](https://www.simhubdash.com/) for motion platforms.
 
-The current version is 0.8.0, and the plugin is still in development. It was
+The current version is 0.9.0, and the plugin is still in development. It was
 tested on one 3DOF platform with the MechWarriorVR mod. The plugin needs no MW5
 mod and works with or without mods such as YetAnotherMechlab.
 
@@ -61,7 +61,7 @@ variant as custom properties for dashboards.
 A chassis that is listed under `SpecificChassis` is sent as `MW5 <Chassis>`, so
 that it can have a profile of its own.
 
-## Installing takes four steps
+## Installing takes five steps
 
 1. Download the zip file of the latest release from the Releases page, extract it,
    and close the game.
@@ -74,8 +74,11 @@ that it can have a profile of its own.
 4. Copy `mw5_motion.cfg` to
    `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping` if you want to change
    settings. The defaults apply without it.
+5. Copy `scripts\mw5_motion.lua` to
+   `%APPDATA%\UnrealVRMod\MechWarrior-Win64-Shipping\scripts` if you want the
+   settings panel in the UEVR menu.
 
-An optional fifth step gives you four starting motion profiles. The folder
+An optional sixth step gives you four starting motion profiles. The folder
 `simhub\profiles` contains one `.shmotionprofile` file for each vehicle name:
 `MW5 Slow`, `MW5 Standard`, `MW5 Fast` and `MW5 Very Fast`. Install the SimHub
 definition from step 3 first, and then import the profiles in SimHub:
@@ -95,6 +98,30 @@ with low gains.
 
 Remove SpaceMonkey's UEVR plugin first, because SimHub can use only one game at
 a time. To remove MW5 Motion, close the game and delete the DLL.
+
+## The settings panel changes values while you play
+
+The panel is in the UEVR menu under **LuaLoader**, in the section **MW5 Motion**.
+It shows the current mech, its vehicle name and the speed at which the comfort
+cap starts. A slider applies its value when you release it, and the plugin saves
+every change to `mw5_motion.cfg`.
+
+- The **Bounce** group sets the comfort level, the heave gain and the heave limit.
+- The **This mech** group stores a comfort level and a gain for the chassis that
+  you are in.
+- The **Smoothing** group sets the four smoothing values.
+- The **Jump jets and MASC** and **Power-up and shutdown** groups switch each
+  effect on or off and set its levels and times.
+- The **Telemetry** group shows the live values: the mech and the vehicle name
+  that are reported to SimHub, speed, angles, forces, the comfort cap and the
+  effects that are sent.
+
+Changes to the bounce and smoothing values reach the platform over about one
+second, so that the platform does not jump. The sliders have a narrower range
+than the file, and all other settings can be changed only in the file.
+
+The panel needs UEVR with plugin interface 2.39 or later. With an older UEVR the
+plugin works as before, and the panel stays empty.
 
 ## The configuration file explains every setting
 
@@ -182,6 +209,7 @@ has a new telemetry signature.
 | `src/Gait.*`, `src/GaitTable.hpp`, `data/mech_gait.csv` | Bounce data per chassis and the optional measuring |
 | `src/SimHub.hpp`, `src/SimHubGenerated.hpp` | Effects, vehicle names and the SimHub packet |
 | `src/ShakerBuffer.hpp` | The event buffer of MechWarriorVR, which supplies the power events |
+| `src/Panel.hpp`, `scripts/mw5_motion.lua` | The settings panel: the settings that can change during play, and the script that draws the panel |
 | `src/Plugin.cpp` | The UEVR plugin: game reader, configuration, sender and debug output |
 | `simhub/` | The SimHub definition and the four starting motion profiles |
 | `tests/` | Unit tests |
@@ -200,7 +228,7 @@ has a new telemetry signature.
 - [UEVR](https://github.com/praydog/UEVR) was made by praydog.
 - The [MechWarriorVR](https://www.nexusmods.com/mechwarrior5mercenaries/mods/1009)
   mod and [MW5-UEVR-Plugins](https://github.com/sicsix/MW5-UEVR-Plugins) were made
-  by sicsix. This plugin follows the cockpit component of that mod.
+  by sicsix, perq and myself (psycho063). This plugin follows the cockpit component of that mod.
 
 ## Licence
 

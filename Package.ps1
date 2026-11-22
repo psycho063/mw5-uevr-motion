@@ -9,9 +9,10 @@ $name="MW5Motion-v$($Matches[1])$Suffix"
 $release=Join-Path $PSScriptRoot 'release'
 $stage=Join-Path $release $name
 if(Test-Path -LiteralPath $stage){Remove-Item -LiteralPath $stage -Recurse -Force}
-New-Item -ItemType Directory -Force -Path (Join-Path $stage 'plugins'),(Join-Path $stage 'simhub\profiles') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $stage 'plugins'),(Join-Path $stage 'scripts'),(Join-Path $stage 'simhub\profiles') | Out-Null
 $dist=Join-Path $PSScriptRoot 'dist'
 Copy-Item -LiteralPath (Join-Path $dist 'plugins\MW5Motion.dll') -Destination (Join-Path $stage 'plugins')
+Copy-Item -LiteralPath (Join-Path $dist 'scripts\mw5_motion.lua') -Destination (Join-Path $stage 'scripts')
 Copy-Item -LiteralPath (Join-Path $dist 'mw5_motion.cfg'),(Join-Path $dist 'mech_gait_reference.csv') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $dist 'simhub\MechWarrior5.simdef') -Destination (Join-Path $stage 'simhub')
 Copy-Item -Path (Join-Path $PSScriptRoot 'simhub\profiles\*.shmotionprofile') -Destination (Join-Path $stage 'simhub\profiles')

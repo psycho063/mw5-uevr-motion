@@ -61,6 +61,26 @@ double comfort_factor(double speedKmh,const Settings& cfg) {
     return level>0&&peak>level?level/peak:1;
 }
 
+void ease_settings(Settings& live,const Settings& target,double dt) {
+    // About 95% of the way in 0.9 s. zeroIsOff: 0 switches the feature off, so
+    // sliding through small values would briefly do the opposite of what is asked.
+    auto ease=[dt](double from,double to,bool zeroIsOff) {
+        if(from==to||!(dt>0)||!std::isfinite(from)||(zeroIsOff&&(from<=0||to<=0)))return to;
+        double share=dt/0.3;
+        if(share>=1)return to;
+        double value=from+(to-from)*share;
+        return std::abs(value-to)<1e-3*std::max(1.0,std::abs(to))?to:value;
+    };
+    Settings next=target;
+    next.heaveComfortG=ease(live.heaveComfortG,target.heaveComfortG,true);
+    next.heaveLimitG=ease(live.heaveLimitG,target.heaveLimitG,true);
+    next.heaveGain=ease(live.heaveGain,target.heaveGain,false);
+    next.positionHz=ease(live.positionHz,target.positionHz,true);
+    next.velocityHz=ease(live.velocityHz,target.velocityHz,true);
+    next.accelerationHz=ease(live.accelerationHz,target.accelerationHz,true);
+    next.angularHz=ease(live.angularHz,target.angularHz,true);
+    live=next;
+}
 Frame neutral(Frame f,bool stale) {
     // Preserve position and the raw MASC gauge for diagnostics; clear all rig cues.
     f.OutputActive=0;f.Stale=stale;f.DeltaTime=0;

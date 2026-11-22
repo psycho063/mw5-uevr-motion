@@ -2,6 +2,7 @@
 #include "SimHub.hpp"
 #include "Gait.hpp"
 #include "ShakerBuffer.hpp"
+#include "Panel.hpp"
 #include <cstddef>
 #include <cstring>
 #include <cmath>
@@ -320,5 +321,48 @@ int main(){
     ring=shaker_new_events(0,ShakerControl{5,1000});check(ring.first==6&&ring.count==kShakerSlots,"after an overrun only the newest ring-full is left");
     check(shaker_new_events(13,ShakerControl{12,13}).count==0&&shaker_new_events(20,ShakerControl{12,13}).count==0,"nothing new");
     check(shaker_new_events(0,ShakerControl{500,3}).count==0&&shaker_new_events(0,ShakerControl{-1,3}).count==0,"a nonsense write index is ignored");
+
+    // Settings panel: values, commands and edits to the configuration file.
+    check(panel_key("HeaveComfortG")&&!panel_key("SimHubPort")&&!panel_key("CockpitYawOffsetDeg"),"only in-game settings can change live");
+    check(panel_chassis_key("HeaveGain")&&!panel_chassis_key("JumpJetLevel"),"per chassis: comfort level and gain only");
+    check(panel_value(*panel_key("HeaveComfortG"),2.4999998)=="2.5"&&panel_value(*panel_key("HeaveComfortG"),3)=="3","values are written with at most two decimals");
+    check(panel_value(*panel_key("HeaveComfortG"),50)=="6"&&panel_value(*panel_key("HeaveLimitG"),0)=="2","and kept inside the panel's range");
+    check(panel_value(*panel_key("HeaveSafetyNet"),1)=="1"&&panel_value(*panel_key("HeaveSafetyNet"),0)=="0","flags are 0 or 1");
+    PanelCommand command;
+    check(parse_panel_command("1\n7\nset\nHeaveComfortG=2.5\nHeaveSafetyNet=false",command)&&command.protocol==1&&command.request==7&&command.action=="set"
+        &&command.values.size()==2&&command.values[0].first=="HeaveComfortG"&&command.values[1].second=="false","a command from the script");
+    check(parse_panel_command("1\n8\nget",command)&&command.values.empty()&&!parse_panel_command("hello",command)&&!parse_panel_command("1\nx\nget",command),"malformed commands are refused");
+    double panelNumber{};
+    check(panel_number("true",panelNumber)&&panelNumber==1&&panel_number("0.25",panelNumber)&&near(panelNumber,0.25)&&!panel_number("1x",panelNumber)&&!panel_number("",panelNumber),"numbers and booleans");
+    const std::string file="# Comfort.\nHeaveComfortG = 3\n\nHeaveGain = 1 # as the game\n# [Phoenixhawk]\n# HeaveComfortG = 2.5\n";
+    auto edited=config_set(file,"","HeaveComfortG","2.5");
+    check(edited=="# Comfort.\nHeaveComfortG = 2.5\n\nHeaveGain = 1 # as the game\n# [Phoenixhawk]\n# HeaveComfortG = 2.5\n","a value changes in place; comments stay");
+    check(config_set(file,"","HeaveGain","0.8").find("HeaveGain = 0.8 # as the game\n")!=std::string::npos,"a comment after the value stays");
+    edited=config_set(file,"Dragon","HeaveComfortG","2");
+    check(edited==file+"\n[Dragon]\nHeaveComfortG = 2\n","a chassis block is added at the end");
+    edited=config_set(edited,"dragon","HeaveGain","0.9");
+    check(edited==file+"\n[Dragon]\nHeaveComfortG = 2\nHeaveGain = 0.9\n","a second key joins the block, whatever the case of the name");
+    auto general=config_set(edited,"","JumpJetLevel","0.7");
+    check(general==file+"JumpJetLevel = 0.7\n\n[Dragon]\nHeaveComfortG = 2\nHeaveGain = 0.9\n"||general.find("JumpJetLevel = 0.7\n[Dragon]")!=std::string::npos,"a new general key goes easedBefore the chassis blocks");
+    check(general.find("[Dragon]")>general.find("JumpJetLevel"),"so it does not land inside one");
+    check(config_set(edited,"","HeaveComfortG","4").find("[Dragon]\nHeaveComfortG = 2\n")!=std::string::npos,"a general change leaves the chassis value alone");
+    auto removed=config_remove(edited,"Dragon","HeaveGain");
+    check(removed==file+"\n[Dragon]\nHeaveComfortG = 2\n","removing one chassis key keeps the block");
+    check(config_remove(removed,"Dragon","HeaveComfortG")==file,"removing the last one removes the block");
+    check(config_set("","","HeaveGain","1")=="HeaveGain = 1\n","an empty file gets the key");
+
+    // Changes from the panel ease in.
+    Settings easedLive{},easedTarget{};
+    easedTarget.heaveComfortG=2;easedTarget.positionHz=4;easedTarget.heaveSafetyNet=false;easedTarget.bounceRatio=0.8;
+    ease_settings(easedLive,easedTarget,0.011);
+    check(easedLive.heaveComfortG<3&&easedLive.heaveComfortG>2.9&&easedLive.positionHz>2&&easedLive.positionHz<2.2,"motion settings move a little per frame");
+    check(!easedLive.heaveSafetyNet&&near(easedLive.bounceRatio,0.8),"other settings apply at once");
+    double easedBefore=easedLive.heaveComfortG;bool monotonic=true;
+    for(int i=0;i<90;++i){ease_settings(easedLive,easedTarget,0.011);monotonic=monotonic&&easedLive.heaveComfortG<=easedBefore&&easedLive.heaveComfortG>=2;easedBefore=easedLive.heaveComfortG;}
+    check(monotonic&&near(easedLive.heaveComfortG,2,0.1)&&near(easedLive.positionHz,4,0.1),"and are nearly there after a second, without overshoot");
+    for(int i=0;i<300;++i)ease_settings(easedLive,easedTarget,0.011);
+    check(easedLive.heaveComfortG==2&&easedLive.positionHz==4,"then settle exactly");
+    easedTarget.heaveLimitG=0;ease_settings(easedLive,easedTarget,0.011);check(easedLive.heaveLimitG==0,"switching a limit off does not slide through small limits");
+    easedTarget.heaveLimitG=6;ease_settings(easedLive,easedTarget,0.011);check(easedLive.heaveLimitG==6,"nor does switching it on");
     std::cout<<"All motion tests passed\n";return 0;
 }

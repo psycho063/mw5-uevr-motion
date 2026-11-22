@@ -7,6 +7,7 @@
 #include "Gait.hpp"
 #include "GaitTable.hpp"
 #include "ShakerBuffer.hpp"
+#include "Panel.hpp"
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,7 +26,7 @@
 using API=uevr::API;
 using Object=API::UObject;
 namespace {
-constexpr const char* kVersion="0.8.0";
+constexpr const char* kVersion="0.9.0";
 // Set when GaitLearning is on: the reader then also fetches the mech's root
 // transform. Off by default, and nothing of the learner runs while it is off.
 std::atomic_bool g_learning{false};
@@ -304,11 +306,24 @@ const std::string* lookup(const Config& v,const std::string& key,const std::stri
     if(!chassis.empty())if(auto i=v.find(lower(chassis)+"."+key);i!=v.end())return &i->second;
     auto i=v.find(key);return i==v.end()?nullptr:&i->second;
 }
-double setting(const Config& v,const char* key,double fallback,double min,double max,const std::string& chassis={}) {
+double setting(const Config& v,const char* key,double fallback,double min,double max,const std::string& chassis={},bool quiet=false) {
     auto value=lookup(v,key,chassis);if(!value)return fallback;
     try {size_t used{};double n=std::stod(*value,&used);if(used!=value->size()||!std::isfinite(n)||n<min||n>max)throw 0;return n;}
-    catch(...){API::get()->log_warn("[MW5 Motion] Invalid config %s; using default",key);return fallback;}
+    catch(...){if(!quiet)API::get()->log_warn("[MW5 Motion] Invalid config %s; using default",key);return fallback;}
 }
+// A setting the panel can change: its default and limits come from the panel's table.
+double live_setting(const Config& v,const char* key,const std::string& chassis={},bool quiet=false) {
+    auto k=mw5::panel_key(key);
+    return setting(v,key,k->fallback,k->fileMin,k->fileMax,chassis,quiet);
+}
+std::string json_text(const std::string& s) {
+    std::string out="\"";
+    for(char c:s){if(c=='"'||c=='\\')out+='\\';if(static_cast<unsigned char>(c)>=0x20)out+=c;}
+    return out+"\"";
+}
+constexpr const char* kPanelCommandEvent="mw5.motion.command.v1";
+constexpr const char* kPanelSnapshotEvent="mw5.motion.snapshot.v1";
+void panel_event(const char* name,const char* data);
 std::vector<std::string> list(const Config& v,const char* key) {
     std::vector<std::string> out;auto value=lookup(v,key);if(!value)return out;
     size_t start=0;
@@ -321,8 +336,9 @@ std::vector<std::string> list(const Config& v,const char* key) {
 class MW5Motion final:public uevr::Plugin {
     std::filesystem::path profile;
     Config cfg;
-    // Game thread.
-    mw5::Settings settings;mw5::Sampler sampler;mw5::ProfileSettings profiles;
+    // Game thread. `target` is what the configuration asks for; `settings` is what
+    // the sampler uses and follows it smoothly after a change from the panel.
+    mw5::Settings settings,target;mw5::Sampler sampler;mw5::ProfileSettings profiles;
     mw5::Identity identity;Object* appliedPawn{};std::string appliedTag;
     // Names already given this mission, so switching between lance mechs, or
     // damage that lowers a mech's top speed, does not rename a mech.
@@ -338,13 +354,21 @@ class MW5Motion final:public uevr::Plugin {
     std::mutex mutex;mw5::Frame latest{};uint64_t tickTime{},sessionId{};double sessionSeconds{};
     mw5::Identity sharedIdentity;uint32_t identityVersion{};
     std::string gaitFileText; // complete new file content for the sender thread to write
+    // Settings panel. Commands arrive on whichever thread runs the script and
+    // wait in the inbox for the game thread; the results below go to the sender
+    // thread under `mutex`: new effect settings, edits for mw5_motion.cfg and
+    // the reply for the script.
+    std::mutex panelMutex;std::vector<std::string> panelInbox;
+    mw5::HapticSettings sharedHaptics;uint32_t hapticsVersion{};
+    std::vector<mw5::ConfigEdit> configEdits;std::string snapshotText;
+    std::atomic_bool shakerFound{false};
     // Sender thread.
-    mw5::HapticSettings hapticSettings;mw5::HapticState haptics;uint32_t hapticSequence{};
+    mw5::HapticSettings hapticSettings;mw5::HapticState haptics;uint32_t hapticSequence{},sentHapticsVersion{};
     mw5::Identity sentIdentity;uint32_t sentIdentityVersion{};
     Feed external{true,"127.0.0.1",20779,120}; // SimHub External Sim
     Feed debug{false,"127.0.0.1",20780,60};    // JSON copy of each frame, for tools
     uint64_t emitterId{},lastStatus{};
-    ShakerReader shaker;bool shakerEnabled{true},shakerLogAll{};
+    ShakerReader shaker;bool shakerLogAll{};
     // Debug recording, sender thread only.
     std::ofstream rows,events;int rowHz{20};
     uint64_t started{},nextRow{},recorded{},lastFaults{};
@@ -355,41 +379,157 @@ class MW5Motion final:public uevr::Plugin {
     std::thread worker;
     std::atomic<uint64_t> samples{},validSamples{},readFaults{};
     std::atomic<int> reader{static_cast<int>(Reader::NoPawn)};
+    // What the sender last put in a SimHub packet, for the settings panel.
+    std::atomic<float> sentRpm{};std::atomic<int> sentGear{1},sentAbs{};std::atomic<uint64_t> sentPackets{};
 
     // Motion settings; a "[Chassis]" block in the configuration overrides any of them.
-    void load_motion(const std::string& chassis) {
+    // `immediately` is for a new mech or the start; a change from the panel is
+    // eased in by ease_settings on the following ticks.
+    void load_motion(const std::string& chassis,bool immediately) {
         auto get=[&](const char* key,double fallback,double min,double max){return setting(cfg,key,fallback,min,max,chassis);};
-        settings.yawOffsetDeg=get("CockpitYawOffsetDeg",-90,-180,180);
-        settings.positionHz=get("PositionSmoothingHz",2,0,120);
-        settings.velocityHz=get("VelocitySmoothingHz",2,0,120);
-        settings.accelerationHz=get("AccelerationSmoothingHz",2,0,120);
-        settings.angularHz=get("AngularSmoothingHz",2,0,120);
-        settings.heaveGain=get("HeaveGain",1,0,10);
-        settings.heaveLimitG=get("HeaveLimitG",6,0,100);
-        settings.heaveComfortG=get("HeaveComfortG",3,0,100);
-        settings.heaveSafetyNet=get("HeaveSafetyNet",1,0,1)!=0;
-        settings.bounceRatio=get("CockpitBounceRatio",0.75,0.1,2);
+        auto live=[&](const char* key){return live_setting(cfg,key,chassis);};
+        target.yawOffsetDeg=get("CockpitYawOffsetDeg",-90,-180,180);
+        target.positionHz=live("PositionSmoothingHz");
+        target.velocityHz=live("VelocitySmoothingHz");
+        target.accelerationHz=live("AccelerationSmoothingHz");
+        target.angularHz=live("AngularSmoothingHz");
+        target.heaveGain=live("HeaveGain");
+        target.heaveLimitG=live("HeaveLimitG");
+        target.heaveComfortG=live("HeaveComfortG");
+        target.heaveSafetyNet=live("HeaveSafetyNet")!=0;
+        target.bounceRatio=get("CockpitBounceRatio",0.75,0.1,2);
         // The chassis's gait: the profile folder's file first, then the built-in table.
-        settings.gait={};gaitSource="none";
-        if(auto found=gaitFile.find(lower(chassis));!chassis.empty()&&found!=gaitFile.end()){settings.gait=found->second.gait;gaitSource="mw5_mech_gait.csv";}
-        else if(mw5::builtin_gait(chassis,settings.gait))gaitSource="built-in table";
-        settings.maxAccelerationG=get("MaxAccelerationG",10,0.1,100);
-        settings.maxAngularSpeedDeg=get("MaxAngularSpeedDeg",720,1,3600);
-        settings.teleportDistanceM=get("TeleportDistanceM",10,1,1000);
-        settings.maxDeltaSeconds=get("MaxDeltaSeconds",0.1,0.01,0.25);
-        settings.eventHoldSeconds=get("EventHoldMs",100,0,2000)/1000;
+        target.gait={};gaitSource="none";
+        if(auto found=gaitFile.find(lower(chassis));!chassis.empty()&&found!=gaitFile.end()){target.gait=found->second.gait;gaitSource="mw5_mech_gait.csv";}
+        else if(mw5::builtin_gait(chassis,target.gait))gaitSource="built-in table";
+        target.maxAccelerationG=get("MaxAccelerationG",10,0.1,100);
+        target.maxAngularSpeedDeg=get("MaxAngularSpeedDeg",720,1,3600);
+        target.teleportDistanceM=get("TeleportDistanceM",10,1,1000);
+        target.maxDeltaSeconds=get("MaxDeltaSeconds",0.1,0.01,0.25);
+        target.eventHoldSeconds=get("EventHoldMs",100,0,2000)/1000;
         auto sign=[&](const char* name){return get(name,1,-1,1)<0?-1.0:1.0;};
-        settings.rollSign=sign("RollSign");settings.pitchSign=sign("PitchSign");settings.yawSign=sign("YawSign");
-        settings.lateralSign=sign("LateralSign");settings.verticalSign=sign("VerticalSign");settings.longitudinalSign=sign("LongitudinalSign");
+        target.rollSign=sign("RollSign");target.pitchSign=sign("PitchSign");target.yawSign=sign("YawSign");
+        target.lateralSign=sign("LateralSign");target.verticalSign=sign("VerticalSign");target.longitudinalSign=sign("LongitudinalSign");
+        if(immediately)settings=target;
+    }
+    // The effect settings; all of them can change while the game runs.
+    mw5::HapticSettings load_haptics() const {
+        auto live=[&](const char* key){return live_setting(cfg,key);};
+        mw5::HapticSettings h;
+        h.gear=live("HapticGearEnable")!=0;
+        h.engine=live("HapticEngineEnable")!=0;
+        h.engineMaxRpm=setting(cfg,"EngineMaxRpm",10000,1,1e6);
+        h.jetLevel=live("JumpJetLevel");
+        h.jetWarmupLevel=live("JumpJetWarmupLevel");
+        h.mascEngine=live("MascVibrationEnable")!=0;
+        h.mascRpmStart=live("MascVibrationStartLevel");
+        h.mascRpmDamage=live("MascVibrationDamageLevel");
+        h.abs=live("MascWarningAbsEnable")!=0;
+        h.absMinHz=live("MascWarningAbsMinHz");
+        h.absMaxHz=live("MascWarningAbsMaxHz");
+        h.powerEngine=live("PowerVibrationEnable")!=0;
+        h.powerUpStart=live("PowerUpStartLevel");
+        h.powerUpEnd=live("PowerUpEndLevel");
+        h.powerDownStart=live("PowerDownStartLevel");
+        h.powerDownEnd=live("PowerDownEndLevel");
+        h.powerInitSeconds=live("PowerInitSeconds");
+        h.powerUpSeconds=live("PowerUpSeconds");
+        h.powerDownSeconds=live("PowerDownSeconds");
+        return h;
+    }
+    // Game thread. Carries out what the settings panel asked for and prepares
+    // the reply: the current values, the mech and what the panel may offer.
+    void drain_panel() {
+        std::vector<std::string> inbox;
+        {std::scoped_lock lock(panelMutex);inbox.swap(panelInbox);}
+        if(inbox.empty())return;
+        int request=0;std::string error;bool changed=false;std::vector<mw5::ConfigEdit> edits;
+        auto store=[&](const std::string& section,const std::pair<std::string,std::string>& entry,bool chassisOnly) {
+            auto key=mw5::panel_key(entry.first);double number{};
+            if(!key||(chassisOnly&&!mw5::panel_chassis_key(entry.first))||!mw5::panel_number(entry.second,number)){error="The plugin does not know the setting "+entry.first+".";return;}
+            auto value=mw5::panel_value(*key,number);
+            cfg[(section.empty()?std::string{}:lower(section)+".")+key->name]=value;
+            edits.push_back({section,key->name,value,false});changed=true;
+            note("settings panel: "+(section.empty()?std::string{}:"["+section+"] ")+key->name+" = "+value);
+        };
+        for(auto& text:inbox) {
+            mw5::PanelCommand command;
+            if(!mw5::parse_panel_command(text,command)||command.protocol!=1){error="The panel script and the plugin are different versions.";continue;}
+            request=command.request;
+            if(command.action=="set")for(auto& entry:command.values)store({},entry,false);
+            else if(command.action=="set_chassis") {
+                if(identity.chassis.empty())error="There is no mech to save this for.";
+                else for(auto& entry:command.values)store(identity.chassis,entry,true);
+            } else if(command.action=="clear_chassis") {
+                for(auto key:mw5::kPanelChassisKeys)if(!identity.chassis.empty()&&cfg.erase(lower(identity.chassis)+"."+key)) {
+                    edits.push_back({identity.chassis,key,{},true});changed=true;
+                    note("settings panel: ["+identity.chassis+"] "+key+" removed");
+                }
+            } else if(command.action=="reload") {
+                cfg=config_read(profile/L"mw5_motion.cfg");changed=true;
+                note("settings panel: mw5_motion.cfg read again");
+            } else if(command.action!="get")error="The panel script and the plugin are different versions.";
+        }
+        if(changed)load_motion(identity.chassis,false);
+        auto reply=snapshot(request,error);
+        std::scoped_lock lock(mutex);
+        if(changed){sharedHaptics=load_haptics();++hapticsVersion;}
+        configEdits.insert(configEdits.end(),edits.begin(),edits.end());
+        snapshotText=std::move(reply);
+    }
+    std::string snapshot(int request,const std::string& error) const {
+        auto number=[](double v){char text[32];snprintf(text,sizeof(text),"%.6g",v);return std::string(text);};
+        std::string s="{\"protocol\":1,\"request\":"+std::to_string(request)+",\"version\":"+json_text(kVersion)+",\"error\":"+json_text(error)
+            +",\"reader\":"+json_text(text(static_cast<Reader>(reader.load())))+",\"chassis\":"+json_text(identity.chassis)
+            +",\"variant\":"+json_text(identity.variant)+",\"vehicle\":"+json_text(identity.profile)
+            +",\"cap\":"+json_text(identity.chassis.empty()?std::string{}:target.gait.known()?cap_text(target):"no bounce data for this chassis: no comfort cap")
+            +",\"shaker\":"+(shakerFound?"true":"false")
+            +",\"weight\":"+json_text(identity.weightClass)+",\"baseMaxSpeedKmh\":"+number(identity.baseMaxSpeedKmh)
+            +",\"simhub\":{\"enabled\":"+(external.enabled?"true":"false")+",\"address\":"+json_text(external.ip+":"+std::to_string(external.port))
+            +",\"packets\":"+std::to_string(sentPackets.load())+",\"gear\":"+std::to_string(sentGear.load())+",\"abs\":"+std::to_string(sentAbs.load())
+            +",\"rpm\":"+number(sentRpm.load())+",\"maxRpm\":"+number(setting(cfg,"EngineMaxRpm",10000,1,1e6,{},true))+"}"
+            // The frame of the previous tick; this thread is the only one that writes it.
+            +",\"frame\":"+mw5::json(latest)+",\"settings\":{";
+        bool first=true;
+        for(auto& k:mw5::kPanelKeys) {
+            double v=live_setting(cfg,k.name,{},true);
+            s+=(first?"":",")+json_text(k.name)+":"+(k.flag?(v!=0?"true":"false"):number(v));first=false;
+        }
+        s+="},\"chassis_settings\":{";first=true;
+        if(!identity.chassis.empty())for(auto key:mw5::kPanelChassisKeys)if(cfg.count(lower(identity.chassis)+"."+key)) {
+            s+=(first?"":",")+json_text(key)+":"+number(live_setting(cfg,key,identity.chassis,true));first=false;
+        }
+        s+="},\"keys\":{";first=true;
+        for(auto& k:mw5::kPanelKeys) {
+            s+=(first?"":",")+json_text(k.name)+":{\"min\":"+number(k.panelMin)+",\"max\":"+number(k.panelMax)+",\"def\":"+(k.flag?(k.fallback!=0?"true":"false"):number(k.fallback))+"}";first=false;
+        }
+        return s+"}}";
+    }
+    // Sender thread. Applies the panel's edits to mw5_motion.cfg through a
+    // temporary file, so a crash cannot leave half a configuration behind.
+    void write_config(const std::vector<mw5::ConfigEdit>& edits,uint64_t now) {
+        auto path=profile/L"mw5_motion.cfg",temporary=profile/L"mw5_motion.cfg.tmp";
+        std::string content;
+        {std::ifstream in(path);std::stringstream all;all<<in.rdbuf();content=all.str();}
+        for(auto& e:edits)content=e.remove?mw5::config_remove(content,e.section,e.key):mw5::config_set(content,e.section,e.key,e.value);
+        bool written=false;
+        {std::ofstream out(temporary,std::ios::trunc);out<<content;out.flush();written=out.good();}
+        std::error_code failed;
+        if(written)std::filesystem::rename(temporary,path,failed);
+        if(!written||failed) {
+            API::get()->log_error("[MW5 Motion] Could not save mw5_motion.cfg; the new settings apply until the game closes");
+            if(events.is_open())event(now,"could not save mw5_motion.cfg");
+        }
     }
     // Lowest speed at which the comfort cap acts for the current mech, for the log.
     // 0 when it never does below 400 km/h.
-    double cap_speed() const {
+    static double cap_speed(const mw5::Settings& settings) {
         for(double kmh=1;kmh<=400;kmh+=1)if(mw5::comfort_factor(kmh,settings)<1)return kmh;
         return 0;
     }
-    std::string cap_text() const {
-        double kmh=cap_speed();
+    std::string cap_text() const {return cap_text(settings);}
+    static std::string cap_text(const mw5::Settings& settings) {
+        double kmh=cap_speed(settings);
         if(settings.heaveComfortG<=0)return "the comfort cap is off";
         if(kmh<=0)return "the comfort cap never acts for this mech";
         char text[80];snprintf(text,sizeof(text),"the comfort cap acts from about %.0f km/h",kmh);return text;
@@ -407,7 +547,7 @@ class MW5Motion final:public uevr::Plugin {
         // Only bother when it moved by more than a few percent.
         auto moved=[](double a,double b){return std::abs(a-b)>0.03*std::max(a,b);};
         if(!g.known()||(!moved(g.walkBounceM,settings.gait.walkBounceM)&&!moved(g.runBounceM,settings.gait.runBounceM)))return false;
-        settings.gait=g;gaitSource="learning";
+        target.gait=settings.gait=g;gaitSource="learning";
         gaitFile[lower(identity.chassis)]={identity.chassis,g};
         file="# Gaits for chassis the plugin's built-in table does not cover. Written by the plugin\n"
              "# when GaitLearning = 1; rows can also be added or corrected by hand.\n"+std::string(mw5::kGaitHeader)+"\n";
@@ -429,7 +569,7 @@ class MW5Motion final:public uevr::Plugin {
                 identity=known->second;
                 note("back in a mech named earlier: \""+identity.profile+"\"");
             }
-            load_motion(identity.chassis);changed=true;
+            load_motion(identity.chassis,true);changed=true;
             learnThis=learning&&!identity.chassis.empty()&&!settings.gait.known();
             learner.reset();learnCheckIn=5;
             if(!appliedTag.empty()) {
@@ -514,6 +654,8 @@ class MW5Motion final:public uevr::Plugin {
             auto packet=mw5::external_packet(f,emitterId,session,external.sent+1,seconds,haptics,hapticSettings,sentIdentity);
             external.send(std::string(reinterpret_cast<const char*>(&packet),sizeof(packet)),now);
         }
+        sentRpm=hapticSettings.engine?static_cast<float>(haptics.rpm):0;sentGear=hapticSettings.gear&&haptics.mascGear?2:1;
+        sentAbs=hapticSettings.abs&&haptics.absActive?1:0;sentPackets=external.sent;
         if(debug.enabled)debug.send(mw5::json(f),now);
         record(f,now);
     }
@@ -521,11 +663,16 @@ class MW5Motion final:public uevr::Plugin {
         uint32_t lastSequence{};uint64_t lastNeutral{};
         while(!stop) {
             uint64_t now=GetTickCount64(),tick{},session{};double seconds{};mw5::Frame f{};
-            std::string gaitText;
+            std::string gaitText,reply;std::vector<mw5::ConfigEdit> edits;
             {std::scoped_lock lock(mutex);
                 f=latest;tick=tickTime;session=sessionId;seconds=sessionSeconds;gaitText.swap(gaitFileText);
                 if(identityVersion!=sentIdentityVersion){sentIdentity=sharedIdentity;sentIdentityVersion=identityVersion;}
+                if(hapticsVersion!=sentHapticsVersion){hapticSettings=sharedHaptics;sentHapticsVersion=hapticsVersion;}
+                edits.swap(configEdits);reply.swap(snapshotText);
             }
+            // Settings panel: save what it changed, then answer the script.
+            if(!edits.empty())write_config(edits,now);
+            if(!reply.empty())API::get()->param()->functions->dispatch_lua_event(kPanelSnapshotEvent,reply.c_str());
             if(!gaitText.empty()) {
                 // Learned gaits; disk I/O stays on this thread.
                 std::ofstream out(profile/L"mw5_mech_gait.csv",std::ios::trunc);out<<gaitText;
@@ -546,7 +693,6 @@ class MW5Motion final:public uevr::Plugin {
     // Sender thread. Events MechWarriorVR publishes for MechShaker; here they
     // start the power-up and shutdown vibration.
     void poll_shaker(uint64_t now) {
-        if(!shakerEnabled)return;
         bool wasOpen=shaker.view!=nullptr;
         shaker.poll(now,[&](const mw5::ShakerEvent& e) {
             if(shakerLogAll&&events.is_open()) {
@@ -560,6 +706,7 @@ class MW5Motion final:public uevr::Plugin {
             if(events.is_open())event(now,std::string("mech power: ")+(e.int0>=0&&e.int0<=2?phases[e.int0]:"unknown phase"));
         });
         if(!wasOpen&&shaker.view&&events.is_open())event(now,"MechShaker event buffer found: power-up and shutdown vibration available");
+        shakerFound=shaker.view!=nullptr;
     }
 public:
     ~MW5Motion() override {
@@ -584,28 +731,9 @@ public:
             while(std::getline(in,line))if(mw5::parse_gait_line(line,chassis,gait))gaitFile[lower(chassis)]={chassis,gait};
         }
         learning=setting(cfg,"GaitLearning",0,0,1)!=0;g_learning=learning;
-        load_motion({});
-        hapticSettings.gear=setting(cfg,"HapticGearEnable",1,0,1)!=0;
-        hapticSettings.engine=setting(cfg,"HapticEngineEnable",1,0,1)!=0;
-        hapticSettings.engineMaxRpm=setting(cfg,"EngineMaxRpm",10000,1,1e6);
-        hapticSettings.jetLevel=setting(cfg,"JumpJetLevel",0.8,0,1);
-        hapticSettings.jetWarmupLevel=setting(cfg,"JumpJetWarmupLevel",0.4,0,1);
-        hapticSettings.mascEngine=setting(cfg,"MascVibrationEnable",1,0,1)!=0;
-        hapticSettings.mascRpmStart=setting(cfg,"MascVibrationStartLevel",0.9,0,1);
-        hapticSettings.mascRpmDamage=setting(cfg,"MascVibrationDamageLevel",0.5,0,1);
-        hapticSettings.abs=setting(cfg,"MascWarningAbsEnable",1,0,1)!=0;
-        hapticSettings.absMinHz=setting(cfg,"MascWarningAbsMinHz",2,0.5,15);
-        hapticSettings.absMaxHz=setting(cfg,"MascWarningAbsMaxHz",6,0.5,15);
-        hapticSettings.powerEngine=setting(cfg,"PowerVibrationEnable",1,0,1)!=0;
-        hapticSettings.powerUpStart=setting(cfg,"PowerUpStartLevel",0.45,0,1);
-        hapticSettings.powerUpEnd=setting(cfg,"PowerUpEndLevel",0.85,0,1);
-        hapticSettings.powerDownStart=setting(cfg,"PowerDownStartLevel",0.85,0,1);
-        hapticSettings.powerDownEnd=setting(cfg,"PowerDownEndLevel",0.45,0,1);
-        hapticSettings.powerInitSeconds=setting(cfg,"PowerInitSeconds",5,0,60);
-        hapticSettings.powerUpSeconds=setting(cfg,"PowerUpSeconds",4,0,60);
-        hapticSettings.powerDownSeconds=setting(cfg,"PowerDownSeconds",3,0,60);
+        load_motion({},true);
+        hapticSettings=sharedHaptics=load_haptics();
         shakerLogAll=setting(cfg,"DebugShakerEvents",0,0,1)!=0;
-        shakerEnabled=hapticSettings.powerEngine||shakerLogAll;
         for(auto old:{"MascVibrationMinLevel","MascVibrationMaxLevel"})if(lookup(cfg,old))API::get()->log_warn("[MW5 Motion] %s is no longer used; see MascVibrationStartLevel and MascVibrationDamageLevel",old);
         profiles.specificChassis=list(cfg,"SpecificChassis");
         if(auto limits=list(cfg,"SpeedBandLimitsKmh");!limits.empty()) {
@@ -640,7 +768,24 @@ public:
         else {external.enabled=debug.enabled=false;API::get()->log_error("[MW5 Motion] WSAStartup failed");}
         emitterId=(GetTickCount64()<<32)^GetCurrentProcessId();sessionId=emitterId;
         worker=std::thread([this]{run();});
+        // The settings panel talks to the plugin through events from its Lua
+        // script. UEVR's plugin interface 2.39 added the callback for them, right
+        // after the callbacks the vendored 2.34 header describes; on an older
+        // UEVR the plugin works as before and the panel stays empty.
+        auto param=API::get()->param();
+        if(param->version->major==UEVR_PLUGIN_VERSION_MAJOR&&param->version->minor>=39) {
+            using CustomEventCallback=void(*)(const char*,const char*);
+            bool(*add)(CustomEventCallback){};
+            std::memcpy(&add,reinterpret_cast<const char*>(param->callbacks)+sizeof(UEVR_PluginCallbacks),sizeof(add));
+            if(add&&add(&panel_event))API::get()->log_info("[MW5 Motion] Settings panel available: LuaLoader > MW5 Motion (needs scripts\\mw5_motion.lua)");
+        } else API::get()->log_info("[MW5 Motion] This UEVR version is too old for the settings panel; settings come from mw5_motion.cfg only");
         API::get()->log_info("[MW5 Motion] v%s initialized; SimHub=%s:%d",kVersion,external.ip.c_str(),external.port);
+    }
+    // Any thread: a command from the settings panel's script.
+    void panel_command(const char* data) {
+        if(!enabled||!initialized||!data)return;
+        std::scoped_lock lock(panelMutex);
+        if(panelInbox.size()<64)panelInbox.emplace_back(data);
     }
     void on_post_engine_tick(API::UGameEngine*,float dt) override {
         if(!enabled||!initialized)return;
@@ -649,6 +794,8 @@ public:
         else reader=static_cast<int>(state);
         s.timestampMs=GetTickCount64();++samples;if(s.valid)++validSamples;
         bool renamed=update_identity(s);
+        drain_panel();
+        mw5::ease_settings(settings,target,dt);
         auto f=sampler.update(s,settings);
         std::string newGaitFile;
         bool learned=learning&&learn(s,f,dt,newGaitFile);
@@ -662,4 +809,7 @@ public:
 };
 // Lifetime is the game process. UEVR has no safe callback removal for DLL unload.
 auto plugin=std::make_unique<MW5Motion>();
+void panel_event(const char* name,const char* data) {
+    if(name&&std::strcmp(name,kPanelCommandEvent)==0&&plugin)plugin->panel_command(data);
+}
 }

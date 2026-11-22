@@ -129,6 +129,11 @@ double bounce_peak(double speedKmh, const Settings& settings);
 // The factor that keeps that bounce at or below the comfort level; 1 when it
 // already is, when the chassis is unknown or when the cap is off.
 double comfort_factor(double speedKmh, const Settings& settings);
+// Moves the settings that shape the motion (heave levels and gain, smoothing)
+// from their live values towards `target` over about a second, so a change made
+// while the game runs never steps the platform. Everything else is taken from
+// `target` at once, and so is a value that switches a feature off or on (0).
+void ease_settings(Settings& live, const Settings& target, double dt);
 Frame neutral(Frame f, bool stale=false);
 std::string json(const Frame& f);
 }
