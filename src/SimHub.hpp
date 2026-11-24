@@ -36,28 +36,124 @@ struct HapticSettings {
     bool powerEngine{true};
     double powerUpStart{0.45}, powerUpEnd{0.85}, powerDownStart{0.85}, powerDownEnd{0.45};
     double powerInitSeconds{5}, powerUpSeconds{4}, powerDownSeconds{3};
+    // A part of the mech being destroyed is a kick in the motion and a rough burst
+    // of engine vibration. The kick is a short lean of the roll angle towards
+    // the side that was lost, because platforms follow the angles; legs and side
+    // torsos also drop in heave, and the head tips the nose up. A mech's roll
+    // stays within about 3 degrees while it runs and its pitch within about 12,
+    // so the roll kick is small and the pitch kick larger: partRollDeg and
+    // partPitchDeg are the peaks of a kick with factor 1 at strength 1,
+    // partDropMs2 that of the drop. No kick exceeds the three limits whatever
+    // the settings. The parts arrive as MechShaker "PartDestruction" events.
+    bool parts{true}, partVibration{true};
+    double partStrength{1}, partArm{0.4}, partLeg{0.6}, partSideTorso{0.8}, partCore{1};
+    double partRollDeg{4}, partRollLimitDeg{8}, partPitchDeg{15}, partPitchLimitDeg{25};
+    double partDropMs2{6}, partDropLimitMs2{25};
+    // The share of the pitch kick that a lost side torso adds to its roll.
+    double partSidePitch{0.3};
 };
 // The phase a MechShaker "Powering" event carries in its first value.
 enum PowerPhase : int { PowerInitialising=0, PowerUp=1, PowerDown=2 };
+// The part a MechShaker "PartDestruction" event carries in its first value.
+enum Part : int { PartHead=0, PartCenterTorso=1, PartLeftTorso=2, PartLeftArm=3, PartLeftLeg=4, PartRightTorso=5, PartRightArm=6, PartRightLeg=7 };
+// A kick: a shove that eases out to its peak in 0.3 s, holds briefly and eases
+// back to rest over `back` seconds without swinging past it, as a mech's punch
+// does. Gentle enough in its rate for a platform to follow without a jerk.
+constexpr double kKickRise=0.3, kKickHold=0.15, kKickBack=0.75, kKickBackLeg=1.5;
+inline double kick_shape(double t,double back=kKickBack) {
+    if(t<0||t>=kKickRise+kKickHold+back)return 0;
+    if(t<kKickRise)return 0.5*(1-std::cos(pi*t/kKickRise));
+    if(t<kKickRise+kKickHold)return 1;
+    return 0.5*(1+std::cos(pi*(t-kKickRise-kKickHold)/back));
+}
+// How a mech died, for the vibration that goes with it.
+enum Death : int {
+    DeathExplosion=0, // cored, or the engine went with a side torso: a long rough rumble
+    DeathEjection=1,  // the pilot left a mech that is still in one piece: a short, lighter one
+};
+// The game's EMechCauseOfDeath flags.
+constexpr int kCauseCored=0x02, kCauseLegged=0x04, kCauseNoPilot=0x08;
 struct HapticState {
     bool mascGear{}, absActive{};
     double rpm{}, phase{};
     int powerPhase{-1};       // PowerPhase while a ramp plays, otherwise -1
     double powerElapsed{};
+    // Part destruction: the peak of the kick in roll and pitch (degrees; roll
+    // right side down, pitch nose up) and in heave (m/s^2, up), and the
+    // vibration burst that goes with it.
+    double kickRoll{}, kickPitch{}, kickHeave{}, kickBack{kKickBack}, kickElapsed{-1};
+    double burstFrom{}, burstTo{}, burstSeconds{}, burstElapsed{-1};
+    // Effects started from the test buttons of the settings panel, seconds left.
+    double testGear{}, testAbs{}, testJets{}, testMasc{};
+    static constexpr double kTestMascSeconds=3;
     // A "Powering" event arrived: start that ramp, replacing any still playing.
     void power_event(int phaseCode) {
         if(phaseCode<PowerInitialising||phaseCode>PowerDown)return;
         powerPhase=phaseCode;powerElapsed=0;
     }
+    // Starts a kick with a vibration burst from rpmFrom to rpmTo (shares of the
+    // max RPM). Parts that go within a fifth of a second of each other, such as a
+    // side torso and its arm, are one hit: only the strongest plays.
+    void impact(double roll,double pitch,double heave,double rpmFrom,double rpmTo,double seconds,double back=kKickBack) {
+        auto size=[](double a,double b,double c){return std::max({std::abs(a),std::abs(b),std::abs(c)});};
+        if(kickElapsed>=0&&kickElapsed<0.2&&size(roll,pitch,heave)<=size(kickRoll,kickPitch,kickHeave))return;
+        kickRoll=roll;kickPitch=pitch;kickHeave=heave;kickBack=back;kickElapsed=0;
+        burstFrom=rpmFrom;burstTo=rpmTo;burstSeconds=seconds;burstElapsed=0;
+    }
+    // A "PartDestruction" event. `wreck` is for parts that break off after the
+    // mech was destroyed: a light rumble only. The centre torso has no kick of
+    // its own: losing it is the mech being destroyed, see mech_destroyed().
+    // fromRear: the last armour hit on a side torso came from behind, so its
+    // kick tips the nose down where a hit from the front tips it up.
+    void part_destroyed(int part,const HapticSettings& cfg,bool wreck=false,bool fromRear=false) {
+        if(!cfg.parts||part<PartHead||part>PartRightLeg)return;
+        if(wreck){burstFrom=burstTo=0.4;burstSeconds=0.3;burstElapsed=0;return;}
+        if(part==PartCenterTorso)return;
+        // The platform lurches towards the side that was lost: left side down for a left part.
+        double side=part==PartLeftTorso||part==PartLeftArm||part==PartLeftLeg?-1:part==PartHead?0:1;
+        // jolt: the share of the pitch kick, nose up as if knocked back. A lost
+        // side torso has a little of it, towards the side the hit did not come from.
+        double factor{},drop{},jolt{},level{},seconds{},back=kKickBack;
+        switch(part) {
+        case PartLeftArm:case PartRightArm:factor=cfg.partArm;level=0.35;seconds=0.3;break;
+        case PartLeftLeg:case PartRightLeg:factor=cfg.partLeg;drop=-1;level=0.3;seconds=0.5;back=kKickBackLeg;break; // the mech sags and recovers slowly
+        case PartLeftTorso:case PartRightTorso:factor=cfg.partSideTorso;jolt=fromRear?-cfg.partSidePitch:cfg.partSidePitch;drop=-1;level=0.25;seconds=0.8;break;
+        default:factor=cfg.partCore;jolt=1;level=0.2;seconds=0.6;break; // head: knocked back, nose up
+        }
+        double lean=std::clamp(cfg.partRollDeg*cfg.partStrength*factor,0.0,cfg.partRollLimitDeg);
+        double tip=std::clamp(cfg.partPitchDeg*cfg.partStrength*factor,0.0,cfg.partPitchLimitDeg);
+        double fall=std::clamp(cfg.partDropMs2*cfg.partStrength*factor,0.0,cfg.partDropLimitMs2);
+        impact(lean*side,tip*jolt,fall*drop,level,level,seconds,back);
+    }
+    // The mech is destroyed. Vibration only: the fall of the mech is already in
+    // the motion. It replaces the shutdown ramp the game also reports.
+    void mech_destroyed(const HapticSettings& cfg,int kind=DeathExplosion) {
+        if(!cfg.parts)return;
+        if(kind==DeathEjection){burstFrom=0.5;burstTo=0.3;burstSeconds=1;}
+        else {burstFrom=0.3;burstTo=0.08;burstSeconds=3;}
+        burstElapsed=0;powerPhase=-1;
+    }
+    // Adds the kick to a frame that is about to be sent. Call after update().
+    void apply_kick(Frame& f) const {
+        if(!f.OutputActive||kickElapsed<0)return;
+        double s=kick_shape(kickElapsed,kickBack);
+        f.RollDegrees+=static_cast<float>(kickRoll*s);
+        f.PitchDegrees+=static_cast<float>(kickPitch*s);
+        f.LocalAccelerationY+=static_cast<float>(kickHeave*s);
+    }
     // Call once per new frame, on the thread that builds the packets.
     void update(const Frame& f,const HapticSettings& cfg) {
         if(!f.OutputActive) {
             // The gear holds through pauses and discontinuities: no shift pulse on resume.
-            // A power ramp waits through a pause and is dropped when the mech is gone.
-            if(!f.FrameValid){mascGear=false;powerPhase=-1;}
+            // A power ramp or a kick waits through a pause and is dropped when the mech is gone.
+            if(!f.FrameValid){mascGear=false;powerPhase=-1;kickElapsed=burstElapsed=-1;}
+            testGear=testAbs=testJets=testMasc=0;
             absActive=false;rpm=phase=0;return;
         }
-        mascGear=f.MascEngaged!=0;
+        auto running=[&](double& left){bool on=left>0;left=std::max(0.0,left-f.DeltaTime);return on;};
+        double mascTestLeft=testMasc;
+        bool gearTest=running(testGear),absTest=running(testAbs),jetTest=running(testJets),mascTest=running(testMasc);
+        mascGear=(f.MascEngaged!=0)!=gearTest;
         double ramp=0;
         if(powerPhase>=0) {
             double length=powerPhase==PowerInitialising?cfg.powerInitSeconds:powerPhase==PowerUp?cfg.powerUpSeconds:cfg.powerDownSeconds;
@@ -68,20 +164,33 @@ struct HapticState {
                 powerElapsed+=f.DeltaTime;
             }
         }
-        if(f.JumpJetState==JetsActive)rpm=cfg.engineMaxRpm*cfg.jetLevel;
+        double burst=-1;
+        if(burstElapsed>=0) {
+            if(burstSeconds<=0||burstElapsed>=burstSeconds)burstElapsed=-1;
+            else {burst=cfg.engineMaxRpm*(burstFrom+(burstTo-burstFrom)*burstElapsed/burstSeconds);burstElapsed+=f.DeltaTime;}
+        }
+        // A part being destroyed outranks everything; then jump jets, MASC and the power ramp.
+        if(burst>=0&&cfg.partVibration)rpm=burst;
+        else if(f.JumpJetState==JetsActive||jetTest)rpm=cfg.engineMaxRpm*cfg.jetLevel;
         else if(f.JumpJetState==JetsWarmup)rpm=cfg.engineMaxRpm*cfg.jetWarmupLevel;
-        else if(cfg.mascEngine&&f.MascEngaged) {
-            double fill=f.MascDamagePoint>0?std::clamp(f.MascGauge/f.MascDamagePoint,0.0f,1.0f):0;
-            rpm=cfg.engineMaxRpm*(cfg.mascRpmStart+(cfg.mascRpmDamage-cfg.mascRpmStart)*fill);
+        else if((cfg.mascEngine&&f.MascEngaged)||mascTest) {
+            double fill=mascTest?1-mascTestLeft/kTestMascSeconds:f.MascDamagePoint>0?std::clamp(f.MascGauge/f.MascDamagePoint,0.0f,1.0f):0;
+            rpm=cfg.engineMaxRpm*(cfg.mascRpmStart+(cfg.mascRpmDamage-cfg.mascRpmStart)*std::clamp(fill,0.0,1.0));
         }
         else rpm=cfg.powerEngine?ramp:0;
         bool warned=f.MascInstalled&&f.MascEngaged&&f.MascWarningPoint>0&&f.MascGauge>=f.MascWarningPoint;
-        if(!warned){absActive=false;phase=0;return;}
+        if(!warned&&!absTest){absActive=false;phase=0;return;}
         double span=f.MascDamagePoint-f.MascWarningPoint;
-        double level=span>0?std::min(1.0,(f.MascGauge-f.MascWarningPoint)/span):1;
+        // A test taps at the middle rate.
+        double level=!warned?0.5:span>0?std::min(1.0,(f.MascGauge-f.MascWarningPoint)/span):1;
         double hz=cfg.absMinHz+(cfg.absMaxHz-cfg.absMinHz)*level;
         absActive=phase<std::min(0.5,hz*cfg.absTapSeconds);
         phase=std::fmod(phase+f.DeltaTime*hz,1.0);
+    }
+    // Moves the kick on by one frame. Call after apply_kick(), so the first frame
+    // of a kick starts at its beginning.
+    void advance_kick(const Frame& f) {
+        if(f.OutputActive&&kickElapsed>=0&&(kickElapsed+=f.DeltaTime)>=kKickRise+kKickHold+kickBack)kickElapsed=-1;
     }
 };
 

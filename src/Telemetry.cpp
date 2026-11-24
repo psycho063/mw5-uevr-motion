@@ -110,6 +110,7 @@ Frame Sampler::update(Sample s,const Settings& cfg) {
     f.MascGauge=bounded(s.mascGauge,1e6);
     f.MascWarningPoint=bounded(s.mascWarningPoint,1e6);f.MascDamagePoint=bounded(s.mascDamagePoint,1e6);
     f.MaxSpeedKmh=bounded(s.maxSpeedKmh,10000);f.HeatPercent=bounded(s.heatPercent,1e6);
+    f.MechDead=s.dead;f.DeathCause=s.deathCause;f.DeathKnown=s.deathKnown;f.TorsoRearHit=s.torsoRearHit;
     f.PhysicsDiscontinuityCounter=discontinuities;
     bool active=f.FrameValid&&!s.paused&&s.controlled;
     if(!active) { if(hasPrevious)++discontinuities;reset();f.PhysicsDiscontinuityCounter=discontinuities;return neutral(f); }
@@ -232,7 +233,7 @@ std::string json(const Frame& f) {
     FIELD(MascInstalled);FIELD(MascEngaged);FIELD(MascStarted);FIELD(MascEnded);FIELD(MascType);
     FIELD(MascGauge);FIELD(MascWarningPoint);FIELD(MascDamagePoint);
     FIELD(JumpJetsInstalled);FIELD(JumpJetState);FIELD(JumpStarted);FIELD(JumpEnded);
-    FIELD(HeatPercent);
+    FIELD(HeatPercent);FIELD(MechDead);FIELD(DeathCause);FIELD(DeathKnown);FIELD(TorsoRearHit);
 #undef FIELD
     s<<"}";return s.str();
 }

@@ -35,6 +35,12 @@ struct Sample {
     Quat rotation{};
     float throttle{}, gameSpeedKmh{}, maxSpeedKmh{}, heatPercent{};
     bool mascInstalled{}, mascEngaged{}, jetsInstalled{};
+    // The verdict of the game on the mech: dead or not, and the EMechCauseOfDeath
+    // flags. deathKnown is false when the game offers no such function.
+    bool dead{}, deathKnown{};
+    // Bit 0: the last armour hit on the left torso came from behind; bit 1: the right torso.
+    uint8_t torsoRearHit{};
+    uint8_t deathCause{};
     int32_t mascType{}, jetState{};
     float mascGauge{}, mascWarningPoint{}, mascDamagePoint{};
     // Cockpit height above the mech's own root, metres. Only read from the game
@@ -105,6 +111,7 @@ struct Frame {
     float MascGauge{}, MascWarningPoint{}, MascDamagePoint{};
     int32_t JumpJetsInstalled{}, JumpJetState{}, JumpStarted{}, JumpEnded{};
     float HeatPercent{};
+    int32_t MechDead{}, DeathCause{}, DeathKnown{}, TorsoRearHit{};
 };
 class Sampler {
 public:

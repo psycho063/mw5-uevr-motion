@@ -188,6 +188,68 @@ local function power()
         "PowerDownEndLevel", "PowerInitSeconds", "PowerUpSeconds", "PowerDownSeconds"})
 end
 
+local function heading(label)
+    imgui.spacing()
+    imgui.text_colored(label, 0xFF8FC9EC)
+end
+
+local function part_destruction()
+    if not status.shaker then text("No MechShaker events found. These effects need MechWarriorVR's bridge.") end
+    check("Effects when a part or the mech is destroyed", "PartDestructionEnable")
+    check("Vibration burst with each kick", "PartVibrationEnable")
+    text("A lost part tilts the platform towards that side for a moment.")
+    text("A destroyed mech only vibrates: its fall is already in the motion.")
+    slider(general, "Kick strength", "PartKickStrength")
+    text("Higher: every kick tilts further. Lower: less. Start low.")
+    text("Share of the full kick for each kind of part:")
+    slider(general, "Arm", "PartArmFactor")
+    slider(general, "Leg", "PartLegFactor")
+    slider(general, "Side torso", "PartSideTorsoFactor")
+    slider(general, "Head and mech destroyed", "PartCoreFactor")
+    defaults("parts", {"PartDestructionEnable", "PartVibrationEnable", "PartKickStrength", "PartArmFactor",
+        "PartLegFactor", "PartSideTorsoFactor", "PartCoreFactor"})
+end
+
+local function test_button(label, effect)
+    if imgui.button(label .. "##test_" .. effect) then send("test", {effect = effect}) end
+end
+local function tests()
+    text("Each button plays one effect. Sit in a mech in a mission, and stand still.")
+    text("The platform moves when you press a button. Start with a low kick strength.")
+    heading("Part destroyed")
+    test_button("Left arm", "left_arm")
+    imgui.same_line()
+    test_button("Right arm", "right_arm")
+    test_button("Left leg", "left_leg")
+    imgui.same_line()
+    test_button("Right leg", "right_leg")
+    test_button("Left torso, hit from the front", "left_torso")
+    imgui.same_line()
+    test_button("Right torso, hit from the front", "right_torso")
+    test_button("Left torso, hit from the rear", "left_torso_rear")
+    imgui.same_line()
+    test_button("Right torso, hit from the rear", "right_torso_rear")
+    test_button("Head", "head")
+    heading("Mech destroyed (vibration only)")
+    test_button("Explosion", "mech_destroyed")
+    imgui.same_line()
+    test_button("Ejection", "ejection")
+    imgui.same_line()
+    test_button("Part off the wreck", "wreck")
+    heading("Power")
+    test_button("Power-up", "power_up")
+    imgui.same_line()
+    test_button("Shutdown", "power_down")
+    heading("MASC and jump jets")
+    test_button("Gear kick", "gear")
+    imgui.same_line()
+    test_button("MASC vibration", "masc")
+    imgui.same_line()
+    test_button("Warning taps", "abs")
+    imgui.same_line()
+    test_button("Jump jets", "jets")
+end
+
 local jet_states = {[0] = "off", [1] = "warming up", [2] = "firing", [3] = "cooling down"}
 local reader_states = {
     ["ok"] = "reading the mech",
@@ -197,11 +259,6 @@ local reader_states = {
 local function number(value, format) return type(value) == "number" and string.format(format, value) or "-" end
 local function yes(value) return (value == true or value == 1) and "yes" or "no" end
 local function line(label, value) imgui.text(label .. ": " .. tostring(value)) end
-local function heading(label)
-    imgui.spacing()
-    imgui.text_colored(label, 0xFF8FC9EC)
-end
-
 local function telemetry()
     last_telemetry = frame
     local f, s = status.frame or {}, status.simhub or {}
@@ -217,6 +274,19 @@ local function telemetry()
         line("Top speed without MASC", number(status.baseMaxSpeedKmh, "%.1f km/h"))
     end
     line("Game reader", reader_states[status.reader] or status.reader)
+    if type(f.TorsoRearHit) == "number" and status.chassis ~= "" then
+        local flags = math.floor(f.TorsoRearHit)
+        line("Left torso last hit from the", flags % 2 >= 1 and "rear" or "front")
+        line("Right torso last hit from the", flags % 4 >= 2 and "rear" or "front")
+    end
+    if f.DeathKnown == 1 then
+        local causes = {}
+        local flags = type(f.DeathCause) == "number" and math.floor(f.DeathCause) or 0
+        if flags % 4 >= 2 then causes[#causes + 1] = "cored" end
+        if flags % 8 >= 4 then causes[#causes + 1] = "legged" end
+        if flags % 16 >= 8 then causes[#causes + 1] = "no pilot" end
+        line("Mech destroyed", f.MechDead == 1 and ("yes" .. (#causes > 0 and (", " .. table.concat(causes, ", ")) or "")) or "no")
+    end
 
     heading("Connection")
     line("SimHub output", s.enabled and ("on, to " .. tostring(s.address)) or "off")
@@ -278,7 +348,7 @@ uevr.sdk.callbacks.on_draw_ui(function()
     last_drawn = frame
     if not status then
         text(error_text or "Waiting for the MW5 Motion plugin.")
-        text("The panel needs MW5Motion.dll 0.9.0 or later and a recent UEVR version.")
+        text("The panel needs the MW5Motion.dll of the same release and a recent UEVR version.")
         if imgui.button("Connect again") then send("get") end
         imgui.tree_pop()
         return
@@ -300,6 +370,8 @@ uevr.sdk.callbacks.on_draw_ui(function()
     group("Smoothing", smoothing)
     group("Jump jets and MASC", jets_and_masc)
     group("Power-up and shutdown", power)
+    group("Part destruction", part_destruction)
+    group("Test effects", tests)
     group("Telemetry", telemetry)
     if imgui.button("Read mw5_motion.cfg again") then
         general, chassis = new_store(), new_store()

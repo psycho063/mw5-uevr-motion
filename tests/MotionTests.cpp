@@ -364,5 +364,93 @@ int main(){
     check(easedLive.heaveComfortG==2&&easedLive.positionHz==4,"then settle exactly");
     easedTarget.heaveLimitG=0;ease_settings(easedLive,easedTarget,0.011);check(easedLive.heaveLimitG==0,"switching a limit off does not slide through small limits");
     easedTarget.heaveLimitG=6;ease_settings(easedLive,easedTarget,0.011);check(easedLive.heaveLimitG==6,"nor does switching it on");
+
+    // Part destruction: a kick in the motion and a burst of engine vibration.
+    check(near(kick_shape(0),0)&&kick_shape(0.15)>0.45&&kick_shape(0.15)<0.55&&near(kick_shape(0.3),1)&&near(kick_shape(0.4),1)&&kick_shape(0.8)>0&&kick_shape(0.8)<1&&kick_shape((kKickRise+kKickHold+kKickBack))==0&&kick_shape(-1)==0,"a kick eases out to 1, holds and eases back");
+    {bool oneWay=true;double fastest=0;for(double t=0.01;t<(kKickRise+kKickHold+kKickBack);t+=0.01){oneWay=oneWay&&kick_shape(t)>=0;fastest=std::max(fastest,std::abs(kick_shape(t)-kick_shape(t-0.01))/0.01);}
+     check(oneWay&&fastest<5.5,"without swinging past rest, and never faster than about five times its size per second");}
+    HapticSettings parts{};HapticState hit{};Frame moving{};
+    moving.OutputActive=moving.FrameValid=1;moving.DeltaTime=0.01f;
+    // Runs the state for `seconds` and returns the largest kick in roll, pitch and heave, with sign.
+    struct Peak { double roll{},pitch{},heave{},rpmFirst{},rpmLast{}; };
+    auto play=[&](double seconds) {
+        Peak p;bool first=true;
+        for(double t=0;t<seconds;t+=0.01) {
+            Frame f=moving;hit.update(f,parts);hit.apply_kick(f);hit.advance_kick(f);
+            if(std::abs(f.RollDegrees)>std::abs(p.roll))p.roll=f.RollDegrees;
+            if(std::abs(f.PitchDegrees)>std::abs(p.pitch))p.pitch=f.PitchDegrees;
+            if(std::abs(f.LocalAccelerationY)>std::abs(p.heave))p.heave=f.LocalAccelerationY;
+            if(f.LocalAccelerationX!=0||f.LocalAccelerationZ!=0)p.roll=1e9; // sideways forces are not used
+            if(first){p.rpmFirst=hit.rpm;first=false;}
+            p.rpmLast=hit.rpm;
+        }
+        return p;
+    };
+    check(play(0.5).roll==0&&hit.rpm==0,"nothing without an event");
+    hit.part_destroyed(PartLeftArm,parts);auto leftArm=play(2);
+    check(near(leftArm.roll,-1.6,0.05)&&leftArm.pitch==0&&leftArm.heave==0,"left arm: a light lean to the left and nothing else");
+    check(near(leftArm.rpmFirst,3500,1)&&leftArm.rpmLast==0,"with a short rough burst that ends");
+    hit.part_destroyed(PartRightArm,parts);auto rightArm=play(2);
+    check(near(rightArm.roll,1.6,0.05),"right arm: to the right");
+    hit.part_destroyed(PartLeftLeg,parts);auto leg=play(2);
+    check(near(leg.roll,-2.4,0.05)&&near(leg.heave,-3.6,0.1)&&leg.pitch==0,"a leg is stronger and drops, with no tip");
+    hit.part_destroyed(PartLeftLeg,parts);play(1.3);check(hit.kickElapsed>0&&kick_shape(hit.kickElapsed,hit.kickBack)>0.05,"a leg comes back slowly: still leaning after 1.3 s");play(1);check(hit.kickElapsed<0,"and is done after two");
+    hit.part_destroyed(PartLeftArm,parts);play(1.3);check(hit.kickElapsed<0,"while an arm is over by then");
+    hit.part_destroyed(PartRightTorso,parts);auto torso=play(2);
+    check(near(torso.roll,3.2,0.05)&&near(torso.heave,-4.8,0.1)&&near(torso.pitch,3.6,0.1)&&std::abs(torso.roll)>std::abs(leg.roll),"a side torso is stronger still");
+    hit.part_destroyed(PartRightTorso,parts,false,true);auto torsoRear=play(2);
+    check(near(torsoRear.roll,3.2,0.05)&&near(torsoRear.pitch,-3.6,0.1)&&near(torsoRear.heave,-4.8,0.1),"hit from the rear, a side torso tips the nose down instead of up");
+    hit.part_destroyed(PartLeftArm,parts,false,true);check(play(2).pitch==0,"the direction only matters for side torsos");
+    Sample rearHit=base();rearHit.torsoRearHit=2;check(Sampler{}.update(rearHit,raw()).TorsoRearHit==2,"which torso was hit from behind reaches the frame");
+    hit.part_destroyed(PartHead,parts);auto head=play(2);
+    check(head.roll==0&&near(head.pitch,15,0.4)&&head.heave==0,"the head knocks the nose up, to neither side");
+    hit.part_destroyed(PartCenterTorso,parts);
+    check(play(1).roll==0&&hit.rpm==0,"the centre torso has no kick of its own");
+    // The mech destroyed: vibration only, by kind of death.
+    hit.power_event(PowerDown);hit.mech_destroyed(parts,DeathExplosion);auto death=play(0.9);
+    check(death.roll==0&&death.pitch==0&&death.heave==0,"mech destroyed: no kick, the fall is in the motion already");
+    check(near(death.rpmFirst,3000,1)&&hit.rpm<death.rpmFirst&&hit.rpm>800&&hit.powerPhase==-1,"an explosion rumbles ever rougher, in place of the shutdown ramp");
+    play(2.2);check(hit.rpm==0,"for three seconds");
+    hit.mech_destroyed(parts,DeathEjection);auto eject=play(0.5);
+    check(near(eject.rpmFirst,5000,1)&&hit.rpm<5000&&hit.rpm>3000,"an ejection is lighter");play(0.6);check(hit.rpm==0,"and lasts a second");
+    hit.part_destroyed(PartLeftLeg,parts,true);auto wreck=play(0.5);
+    check(wreck.roll==0&&wreck.heave==0&&near(wreck.rpmFirst,4000,1)&&hit.rpm==0,"a part breaking off the wreck only rumbles lightly");
+    // A side torso takes its arm with it: one hit, the stronger one, whatever the order.
+    hit.part_destroyed(PartLeftTorso,parts);play(0.05);hit.part_destroyed(PartLeftArm,parts);
+    check(near(hit.kickRoll,-3.2,0.01),"an arm right after its torso does not replace the torso's kick");play(2);
+    hit.part_destroyed(PartLeftArm,parts);play(0.05);hit.part_destroyed(PartLeftTorso,parts);
+    check(near(hit.kickRoll,-3.2,0.01),"a torso right after its arm takes over");
+    play(2);
+    parts.partStrength=10;hit.part_destroyed(PartLeftTorso,parts);check(near(hit.kickRoll,-8,0.01)&&near(hit.kickHeave,-25,0.01),"no kick exceeds the limits");play(2);
+    parts.partStrength=0.5;hit.part_destroyed(PartLeftTorso,parts);check(near(hit.kickRoll,-1.6,0.01),"strength scales the kick");play(2);
+    parts.partStrength=1;parts.partVibration=false;hit.part_destroyed(PartLeftArm,parts);
+    auto silent=play(2);check(near(silent.roll,-1.6,0.05)&&silent.rpmFirst==0,"PartVibrationEnable 0 keeps the kick and drops the burst");
+    parts.partVibration=true;parts.parts=false;hit.part_destroyed(PartLeftTorso,parts);hit.mech_destroyed(parts);
+    check(play(1).roll==0&&hit.rpm==0,"PartDestructionEnable 0 switches it all off");
+    parts.parts=true;hit.part_destroyed(PartLeftArm,parts);
+    Frame jetsFiring=moving;jetsFiring.JumpJetState=JetsActive;hit.update(jetsFiring,parts);
+    check(near(hit.rpm,3500,1),"a part going outranks the jump jets");play(2);
+    hit.part_destroyed(PartLeftArm,parts);play(0.1);
+    Frame pausedFrame=moving;pausedFrame.OutputActive=0;double heldKick=hit.kickElapsed;
+    hit.update(pausedFrame,parts);hit.apply_kick(pausedFrame);hit.advance_kick(pausedFrame);
+    check(hit.kickElapsed==heldKick&&pausedFrame.RollDegrees==0,"a pause holds the kick and sends none");
+    pausedFrame.FrameValid=0;hit.update(pausedFrame,parts);check(hit.kickElapsed<0&&hit.burstElapsed<0,"leaving the mech drops it");
+    hit.part_destroyed(99,parts);hit.part_destroyed(-1,parts);check(hit.kickElapsed<0,"unknown parts are ignored");
+    // The game's verdict travels with every frame.
+    Sample deadMech=base();deadMech.dead=true;deadMech.deathKnown=true;deadMech.deathCause=kCauseCored|kCauseNoPilot;
+    Frame verdict=Sampler{}.update(deadMech,raw());
+    check(verdict.MechDead==1&&verdict.DeathKnown==1&&verdict.DeathCause==0x0a,"dead, known and the cause flags reach the frame");
+
+    // Test buttons of the settings panel.
+    HapticState tested{};HapticSettings ts{};
+    auto step=[&](int n){for(int i=0;i<n;++i)tested.update(moving,ts);};
+    tested.testGear=1;step(1);check(tested.mascGear,"gear test: gear 2");step(110);check(!tested.mascGear,"and back to 1 after a second");
+    tested.testJets=2;step(1);check(near(tested.rpm,8000),"jet test: the firing level");step(210);check(tested.rpm==0,"for two seconds");
+    tested.testMasc=HapticState::kTestMascSeconds;step(1);double mascFirst=tested.rpm;step(280);
+    check(near(mascFirst,9000,1)&&tested.rpm<5400&&tested.rpm>=5000,"MASC test: sweeps from the start level to the damage level");step(30);check(tested.rpm==0,"and stops");
+    tested.testAbs=2;int testTaps=0;bool wasTapping=false;
+    for(int i=0;i<200;++i){tested.update(moving,ts);if(tested.absActive&&!wasTapping)++testTaps;wasTapping=tested.absActive;}
+    check(testTaps>=7&&testTaps<=9,"ABS test: testTaps at the middle rate for two seconds");step(5);check(!tested.absActive,"then none");
+    tested.testJets=2;Frame away=moving;away.OutputActive=0;tested.update(away,ts);check(tested.testJets==0,"tests are dropped while the output is off");
     std::cout<<"All motion tests passed\n";return 0;
 }

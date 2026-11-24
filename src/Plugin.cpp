@@ -26,7 +26,7 @@
 using API=uevr::API;
 using Object=API::UObject;
 namespace {
-constexpr const char* kVersion="0.9.0";
+constexpr const char* kVersion="0.11.3";
 // Set when GaitLearning is on: the reader then also fetches the mech's root
 // transform. Off by default, and nothing of the learner runs while it is off.
 std::atomic_bool g_learning{false};
@@ -118,11 +118,16 @@ const char* text(Reader r) {
 // (MWMech, MWMASCComponent, MWJumpJetComponent, MWHeatComponent) by name, so it
 // works with and without mods such as YetAnotherMechlab.
 struct Mech {
-    Object *pawn{},*cockpit{},*masc{},*jets{},*heat{},*root{};
+    Object *pawn{},*cockpit{},*masc{},*jets{},*heat{},*root{},*living{};
     API::UFunction *toWorld{},*rootToWorld{},*speed{},*maxSpeed{},*throttle{};
-    API::UFunction *hasMasc{},*engaged{},*gauge{},*hasJets{},*jetState{},*heatPercent{};
+    API::UFunction *hasMasc{},*engaged{},*gauge{},*hasJets{},*jetState{},*heatPercent{},*isDead{},*causeFlags{};
     int32_t warningOffset{-1},damageOffset{-1},typeOffset{-1};
     bool isMech{};double retryIn{},tagRetryIn{};
+    // Front and rear armour of the left [0] and right [1] torso, to tell from
+    // which side a torso was last hit.
+    Object *torsoFront[2]{},*torsoRear[2]{};
+    API::UFunction *frontArmor{},*rearArmor{};
+    float frontWas[2]{},rearWas[2]{};bool torsoSeen[2]{};uint8_t torsoRearHit{};
     std::string tag; // "Mech.<WeightClass>.<Chassis>.<Variant>", empty until known
 
     // The mech's gameplay tag, from its data asset: MechData.MechType.TagName.
@@ -147,10 +152,25 @@ struct Mech {
             if(!masc&&chain_has(c,L"MWMASCComponent"))masc=c;
             else if(!jets&&chain_has(c,L"MWJumpJetComponent"))jets=c;
             else if(!heat&&chain_has(c,L"MWHeatComponent"))heat=c;
+            else if(!living&&chain_has(c,L"MWMechLivingActorComponent"))living=c;
         }
         hasMasc=getter(masc,L"HasMASC",1);engaged=getter(masc,L"IsEngaged",1);gauge=getter(masc,L"GetGaugeValue",4);
         hasJets=getter(jets,L"HasJumpJets",1);jetState=getter(jets,L"GetJumpJetState",1);
         heatPercent=getter(heat,L"GetHeatAsPercent",4);
+        // The verdict of the game on the mech, which covers every way a mech can die.
+        isDead=getter(living,L"IsDead",1);causeFlags=getter(living,L"GetCauseOfDeathFlags",1);
+        // Side torsos carry front armour on an armoured container and rear armour
+        // on a plain one; both report a share that only ever falls under fire.
+        for(auto c:components(pawn)) {
+            auto name=c->get_fname()->to_string();
+            if(name==L"HealthContainer_LeftTorso")torsoFront[0]=c;
+            else if(name==L"HealthContainer_RightTorso")torsoFront[1]=c;
+            else if(name==L"HealthContainer_RearLeftTorso")torsoRear[0]=c;
+            else if(name==L"HealthContainer_RearRightTorso")torsoRear[1]=c;
+        }
+        frontArmor=getter(torsoFront[0],L"GetArmorAsPercentage",4);rearArmor=getter(torsoRear[0],L"GetHealthAsPercentage",4);
+        note(std::string("torso armour: ")+(torsoFront[0]&&torsoFront[1]&&torsoRear[0]&&torsoRear[1]?"front and rear found":"containers missing")+
+             ", "+(frontArmor&&rearArmor?"readable: side torso kicks follow the direction of the hit":"not readable: side torso kicks assume a hit from the front"));
         if(auto stats=masc?masc->get_class()->find_property(L"MASCStats"):nullptr;stats&&stats->get_class()->get_name()==L"StructProperty") {
             auto type=reinterpret_cast<API::FStructProperty*>(stats)->get_struct();
             auto offset=[&](const wchar_t* name,const wchar_t* kind) {
@@ -219,10 +239,138 @@ Reader sample_game(mw5::Sample* out,float dt) {
     if(uint8_t type{};m.typeOffset>=0&&copy_memory(reinterpret_cast<const uint8_t*>(m.masc)+m.typeOffset,&type,1))out->mascType=type;
     out->jetsInstalled=call<uint8_t>(m.jets,m.hasJets)!=0;
     out->jetState=out->jetsInstalled?call<uint8_t>(m.jets,m.jetState):0;
+    out->deathKnown=m.isDead!=nullptr;out->dead=call<uint8_t>(m.living,m.isDead)!=0;
+    out->deathCause=out->dead?call<uint8_t>(m.living,m.causeFlags):0;
+    // From which side each torso was last hit: whichever armour fell last. When
+    // both fall in one frame (the torso itself going), the verdict stands.
+    if(m.frontArmor&&m.rearArmor)for(int i=0;i<2;++i) {
+        if(!m.torsoFront[i]||!m.torsoRear[i])continue;
+        float front=call<float>(m.torsoFront[i],m.frontArmor),rear=call<float>(m.torsoRear[i],m.rearArmor);
+        if(m.torsoSeen[i]) {
+            bool frontFell=front<m.frontWas[i]-1e-4f,rearFell=rear<m.rearWas[i]-1e-4f;
+            if(frontFell!=rearFell&&rearFell!=((m.torsoRearHit>>i&1)!=0)) {
+                m.torsoRearHit=static_cast<uint8_t>(m.torsoRearHit^(1<<i));
+                note(std::string(i?"right":"left")+" torso: armour now being hit from the "+(rearFell?"rear":"front"));
+            }
+        }
+        m.frontWas[i]=front;m.rearWas[i]=rear;m.torsoSeen[i]=true;
+    }
+    out->torsoRearHit=m.torsoRearHit;
     return Reader::Ok;
 }
 bool sample_guarded(mw5::Sample* out,float dt,Reader* state) {
     __try {*state=sample_game(out,dt);return true;}
+    __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// Diagnostic, DebugDeathProbe = 1 with DebugLog = 1: once per frame, asks the
+// game whether the mech is dead, why, what its power state is and which parts
+// are destroyed, and writes a line to the event log whenever an answer changes.
+// It only reads and logs; no effect depends on it. Its purpose is to show how
+// these answers line up in time with MechShaker's part destruction events.
+std::atomic_bool g_deathProbe{false};
+struct DeathProbe {
+    Object *pawn{},*living{},*power{},*mesh{};
+    API::UFunction *isDead{},*causeFlags{},*causes{},*health{},*ejected{},*pilotDead{},*powerState{},*isShutdown{},*isPowered{};
+    int32_t causeFlagsSize{},powerStateSize{},partsOffset{-1};
+    bool partsArray{},wasDead{};
+    std::string last;
+
+    static std::string hex(const uint8_t* bytes,int32_t count) {
+        std::string out;char pair[4];
+        for(int32_t i=0;i<count;++i){snprintf(pair,sizeof(pair),"%02x",bytes[i]);out+=pair;}
+        return out;
+    }
+    // A function without inputs whose result fits in the call buffer, or null.
+    // Writes what was found to the log either way.
+    API::UFunction* find(Object* o,const wchar_t* name,int32_t* size=nullptr) {
+        auto label=narrow(name);
+        auto fn=o?o->get_class()->find_function(name):nullptr;
+        if(!fn){note("death probe: "+label+(o?" not found":" not available (its component is missing)"));return nullptr;}
+        auto ret=fn->find_property(L"ReturnValue");
+        int32_t bytes=fn->get_properties_size();
+        std::string kind=ret?narrow(ret->get_class()->get_name()):"no return value";
+        bool usable=ret&&ret->get_offset()==0&&bytes>0&&bytes<=64;
+        note("death probe: "+label+" found, "+std::to_string(bytes)+" bytes, returns "+kind+(usable?"":" (not used: it takes inputs or is too large)"));
+        if(size)*size=bytes;
+        return usable?fn:nullptr;
+    }
+    std::string raw(Object* o,API::UFunction* fn,int32_t size) const {
+        alignas(16) std::array<uint8_t,64> params{};
+        o->process_event(fn,params.data());
+        return hex(params.data(),std::min(size,16));
+    }
+    void resolve(Object* current) {
+        *this={};pawn=current;
+        for(auto c:components(pawn)) {
+            if(!living&&chain_has(c,L"MWMechLivingActorComponent"))living=c;
+            else if(!power&&chain_has(c,L"MWMechPowerComponent"))power=c;
+        }
+        mesh=object(pawn,L"MechMeshComponent");
+        note(std::string("death probe: living actor component ")+(living?"found":"missing")+", power component "+(power?"found":"missing")+", mesh component "+(mesh?"found":"missing"));
+        int32_t size{};
+        isDead=find(living,L"IsDead",&size);if(size!=1)isDead=nullptr;
+        causeFlags=find(living,L"GetCauseOfDeathFlags",&causeFlagsSize);
+        causes=find(living,L"GetCausesOfDeath",&size);if(size!=16)causes=nullptr;
+        health=find(living,L"GetCurrentHealthPercent",&size);if(size!=4)health=nullptr;
+        ejected=find(pawn,L"DidPilotEject",&size);if(size!=1)ejected=nullptr;
+        pilotDead=find(pawn,L"IsPilotDead",&size);if(size!=1)pilotDead=nullptr;
+        powerState=find(power,L"GetPowerState",&powerStateSize);
+        isShutdown=find(power,L"IsShutdown",&size);if(size!=1)isShutdown=nullptr;
+        isPowered=find(power,L"IsPowered",&size);if(size!=1)isPowered=nullptr;
+        if(auto parts=mesh?mesh->get_class()->find_property(L"DestroyedMechParts"):nullptr) {
+            auto kind=narrow(parts->get_class()->get_name());
+            partsOffset=parts->get_offset();partsArray=kind=="ArrayProperty";
+            note("death probe: DestroyedMechParts found, "+kind);
+        } else note("death probe: DestroyedMechParts not found");
+    }
+    // The destroyed parts as the game stores them: the elements of the list, or
+    // the first bytes of whatever else the property turns out to be.
+    std::string parts() const {
+        auto at=reinterpret_cast<const uint8_t*>(mesh)+partsOffset;
+        uint8_t bytes[16]{};
+        if(!partsArray)return copy_memory(at,bytes,8)?hex(bytes,8):"unreadable";
+        struct {const uint8_t* data;int32_t count,capacity;} list{};
+        if(!copy_memory(at,&list,sizeof(list))||list.count<0||list.count>64)return "unreadable";
+        int32_t shown=std::min(list.count,16);
+        if(shown>0&&!copy_memory(list.data,bytes,static_cast<size_t>(shown)))return "unreadable";
+        return "["+hex(bytes,shown)+"] ("+std::to_string(list.count)+")";
+    }
+    void step() {
+        if(!living&&!power&&!mesh)return;
+        std::string state;
+        auto flag=[&](const char* label,Object* o,API::UFunction* fn){if(fn){state+=label;state+=call<uint8_t>(o,fn)?"=1 ":"=0 ";}};
+        bool dead=isDead&&call<uint8_t>(living,isDead)!=0;
+        flag("IsDead",living,isDead);flag("PilotEjected",pawn,ejected);flag("PilotDead",pawn,pilotDead);
+        flag("IsShutdown",power,isShutdown);flag("IsPowered",power,isPowered);
+        if(causeFlags)state+="CauseFlags="+raw(living,causeFlags,causeFlagsSize)+" ";
+        if(powerState)state+="PowerState="+raw(power,powerState,powerStateSize)+" ";
+        if(partsOffset>=0)state+="DestroyedParts="+parts()+" ";
+        if(state!=last) {
+            last=state;
+            char text[32];snprintf(text,sizeof(text),"health=%.3f",health?call<float>(living,health):-1.0f);
+            note("death probe: "+state+text);
+        }
+        if(dead&&!wasDead&&causes) {
+            // Asked once, at the moment of death: the list it returns is not freed.
+            alignas(16) std::array<uint8_t,64> params{};
+            living->process_event(causes,params.data());
+            struct {const uint8_t* data;int32_t count,capacity;} list{};
+            std::memcpy(&list,params.data(),sizeof(list));
+            uint8_t bytes[8]{};int32_t shown=std::clamp(list.count,0,8);
+            bool ok=list.count>=0&&list.count<=64&&(shown==0||copy_memory(list.data,bytes,static_cast<size_t>(shown)));
+            note("death probe: GetCausesOfDeath = "+(ok?"["+hex(bytes,shown)+"] ("+std::to_string(list.count)+")":std::string("unreadable")));
+        }
+        wasDead=dead;
+    }
+};
+DeathProbe g_probe;
+void probe_game() {
+    if(g_probe.pawn!=g_mech.pawn){if(g_mech.isMech)g_probe.resolve(g_mech.pawn);else g_probe={};}
+    if(g_probe.pawn)g_probe.step();
+}
+// A fault in the probe must not disturb the motion: it switches the probe off.
+bool probe_guarded() {
+    __try {probe_game();return true;}
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 struct Feed {
@@ -361,6 +509,7 @@ class MW5Motion final:public uevr::Plugin {
     std::mutex panelMutex;std::vector<std::string> panelInbox;
     mw5::HapticSettings sharedHaptics;uint32_t hapticsVersion{};
     std::vector<mw5::ConfigEdit> configEdits;std::string snapshotText;
+    std::vector<std::string> panelTests; // effects to play once, from the test buttons
     std::atomic_bool shakerFound{false};
     // Sender thread.
     mw5::HapticSettings hapticSettings;mw5::HapticState haptics;uint32_t hapticSequence{},sentHapticsVersion{};
@@ -369,6 +518,9 @@ class MW5Motion final:public uevr::Plugin {
     Feed debug{false,"127.0.0.1",20780,60};    // JSON copy of each frame, for tools
     uint64_t emitterId{},lastStatus{};
     ShakerReader shaker;bool shakerLogAll{};
+    bool wrecked{}; // the mech was destroyed and lies in the game as a wreck
+    bool deathKnown{},deadSeen{};uint64_t deathArmedAt{},sideTorsoLost{};
+    uint8_t torsoRearHit{}; // from the latest frame: which side torsos were last hit from behind
     // Debug recording, sender thread only.
     std::ofstream rows,events;int rowHz{20};
     uint64_t started{},nextRow{},recorded{},lastFaults{};
@@ -435,6 +587,13 @@ class MW5Motion final:public uevr::Plugin {
         h.powerInitSeconds=live("PowerInitSeconds");
         h.powerUpSeconds=live("PowerUpSeconds");
         h.powerDownSeconds=live("PowerDownSeconds");
+        h.parts=live("PartDestructionEnable")!=0;
+        h.partVibration=live("PartVibrationEnable")!=0;
+        h.partStrength=live("PartKickStrength");
+        h.partArm=live("PartArmFactor");
+        h.partLeg=live("PartLegFactor");
+        h.partSideTorso=live("PartSideTorsoFactor");
+        h.partCore=live("PartCoreFactor");
         return h;
     }
     // Game thread. Carries out what the settings panel asked for and prepares
@@ -443,7 +602,7 @@ class MW5Motion final:public uevr::Plugin {
         std::vector<std::string> inbox;
         {std::scoped_lock lock(panelMutex);inbox.swap(panelInbox);}
         if(inbox.empty())return;
-        int request=0;std::string error;bool changed=false;std::vector<mw5::ConfigEdit> edits;
+        int request=0;std::string error;bool changed=false;std::vector<mw5::ConfigEdit> edits;std::vector<std::string> tests;
         auto store=[&](const std::string& section,const std::pair<std::string,std::string>& entry,bool chassisOnly) {
             auto key=mw5::panel_key(entry.first);double number{};
             if(!key||(chassisOnly&&!mw5::panel_chassis_key(entry.first))||!mw5::panel_number(entry.second,number)){error="The plugin does not know the setting "+entry.first+".";return;}
@@ -468,6 +627,8 @@ class MW5Motion final:public uevr::Plugin {
             } else if(command.action=="reload") {
                 cfg=config_read(profile/L"mw5_motion.cfg");changed=true;
                 note("settings panel: mw5_motion.cfg read again");
+            } else if(command.action=="test") {
+                for(auto& entry:command.values)if(entry.first=="effect"&&tests.size()<8)tests.push_back(entry.second);
             } else if(command.action!="get")error="The panel script and the plugin are different versions.";
         }
         if(changed)load_motion(identity.chassis,false);
@@ -475,6 +636,7 @@ class MW5Motion final:public uevr::Plugin {
         std::scoped_lock lock(mutex);
         if(changed){sharedHaptics=load_haptics();++hapticsVersion;}
         configEdits.insert(configEdits.end(),edits.begin(),edits.end());
+        panelTests.insert(panelTests.end(),tests.begin(),tests.end());
         snapshotText=std::move(reply);
     }
     std::string snapshot(int request,const std::string& error) const {
@@ -504,6 +666,54 @@ class MW5Motion final:public uevr::Plugin {
             s+=(first?"":",")+json_text(k.name)+":{\"min\":"+number(k.panelMin)+",\"max\":"+number(k.panelMax)+",\"def\":"+(k.flag?(k.fallback!=0?"true":"false"):number(k.fallback))+"}";first=false;
         }
         return s+"}}";
+    }
+    // Sender thread. The game says whether the mech is dead and why. The moment
+    // it turns dead starts the vibration for that kind of death; the fall of the
+    // mech is in the motion already. Only the player's own mech is ever read.
+    void watch_death(const mw5::Frame& f,uint64_t now) {
+        if(!f.FrameValid){wrecked=deadSeen=false;return;}
+        deathKnown=f.DeathKnown!=0;
+        if(!deathKnown)return;
+        bool dead=f.MechDead!=0;
+        // A mech the player has only just entered reports its state, not an event.
+        if(dead&&!deadSeen&&now>=deathArmedAt) {
+            bool cored=(f.DeathCause&mw5::kCauseCored)!=0;
+            // An engine that goes with a side torso is reported as "no pilot" about a second later.
+            bool engine=!cored&&(f.DeathCause&mw5::kCauseNoPilot)&&sideTorsoLost&&now-sideTorsoLost<=1500;
+            bool legged=f.DeathCause==mw5::kCauseLegged;
+            const char* what=cored?"cored: explosion vibration":engine?"engine lost with a side torso: explosion vibration":
+                legged?"legged: no vibration":"pilot out, mech in one piece: light vibration";
+            if(cored||engine)haptics.mech_destroyed(hapticSettings,mw5::DeathExplosion);
+            else if(!legged)haptics.mech_destroyed(hapticSettings,mw5::DeathEjection);
+            wrecked=hapticSettings.parts;
+            char line[160];snprintf(line,sizeof(line),"mech destroyed (cause flags 0x%02x): %s",static_cast<unsigned>(f.DeathCause),what);
+            if(events.is_open())event(now,line);
+        }
+        if(!dead)wrecked=false;
+        deadSeen=dead;
+    }
+    // Sender thread. Plays one effect for a test button of the settings panel. The
+    // effects only reach SimHub while the player sits in a mech.
+    void run_test(const std::string& name,uint64_t now) {
+        static const std::pair<const char*,int> parts[]={{"head",mw5::PartHead},{"left_torso",mw5::PartLeftTorso},{"left_arm",mw5::PartLeftArm},
+            {"left_leg",mw5::PartLeftLeg},{"right_torso",mw5::PartRightTorso},{"right_arm",mw5::PartRightArm},{"right_leg",mw5::PartRightLeg}};
+        bool known=true;
+        if(name=="mech_destroyed")haptics.mech_destroyed(hapticSettings,mw5::DeathExplosion);
+        else if(name=="ejection")haptics.mech_destroyed(hapticSettings,mw5::DeathEjection);
+        else if(name=="wreck")haptics.part_destroyed(mw5::PartHead,hapticSettings,true);
+        else if(name=="power_up")haptics.power_event(mw5::PowerUp);
+        else if(name=="power_down")haptics.power_event(mw5::PowerDown);
+        else if(name=="gear")haptics.testGear=1;
+        else if(name=="abs")haptics.testAbs=2;
+        else if(name=="jets")haptics.testJets=2;
+        else if(name=="masc")haptics.testMasc=mw5::HapticState::kTestMascSeconds;
+        else {
+            known=false;
+            for(auto& part:parts)if(name==part.first){haptics.part_destroyed(part.second,hapticSettings);known=true;}
+            if(name=="left_torso_rear"){haptics.part_destroyed(mw5::PartLeftTorso,hapticSettings,false,true);known=true;}
+            if(name=="right_torso_rear"){haptics.part_destroyed(mw5::PartRightTorso,hapticSettings,false,true);known=true;}
+        }
+        if(known&&events.is_open())event(now,"settings panel: test of "+name);
     }
     // Sender thread. Applies the panel's edits to mw5_motion.cfg through a
     // temporary file, so a crash cannot leave half a configuration behind.
@@ -649,7 +859,12 @@ class MW5Motion final:public uevr::Plugin {
     void publish(mw5::Frame f,uint64_t now,uint64_t session,double seconds) {
         f.TimestampMS=static_cast<uint32_t>(now);
         // Heartbeats repeat a frame; advance the haptic state once per active sample.
-        if(f.Sequence!=hapticSequence||!f.OutputActive){haptics.update(f,hapticSettings);hapticSequence=f.Sequence;}
+        if(f.Sequence!=hapticSequence||!f.OutputActive) {
+            watch_death(f,now);
+            haptics.update(f,hapticSettings);hapticSequence=f.Sequence;
+            // A part being destroyed kicks the motion itself.
+            haptics.apply_kick(f);haptics.advance_kick(f);
+        }
         if(external.enabled) {
             auto packet=mw5::external_packet(f,emitterId,session,external.sent+1,seconds,haptics,hapticSettings,sentIdentity);
             external.send(std::string(reinterpret_cast<const char*>(&packet),sizeof(packet)),now);
@@ -663,20 +878,23 @@ class MW5Motion final:public uevr::Plugin {
         uint32_t lastSequence{};uint64_t lastNeutral{};
         while(!stop) {
             uint64_t now=GetTickCount64(),tick{},session{};double seconds{};mw5::Frame f{};
-            std::string gaitText,reply;std::vector<mw5::ConfigEdit> edits;
+            std::string gaitText,reply;std::vector<mw5::ConfigEdit> edits;std::vector<std::string> tests;
             {std::scoped_lock lock(mutex);
                 f=latest;tick=tickTime;session=sessionId;seconds=sessionSeconds;gaitText.swap(gaitFileText);
-                if(identityVersion!=sentIdentityVersion){sentIdentity=sharedIdentity;sentIdentityVersion=identityVersion;}
+                if(identityVersion!=sentIdentityVersion){sentIdentity=sharedIdentity;sentIdentityVersion=identityVersion;wrecked=false;deathArmedAt=now+1000;}
+                tests.swap(panelTests);
                 if(hapticsVersion!=sentHapticsVersion){hapticSettings=sharedHaptics;sentHapticsVersion=hapticsVersion;}
                 edits.swap(configEdits);reply.swap(snapshotText);
             }
             // Settings panel: save what it changed, then answer the script.
             if(!edits.empty())write_config(edits,now);
+            for(auto& test:tests)run_test(test,now);
             if(!reply.empty())API::get()->param()->functions->dispatch_lua_event(kPanelSnapshotEvent,reply.c_str());
             if(!gaitText.empty()) {
                 // Learned gaits; disk I/O stays on this thread.
                 std::ofstream out(profile/L"mw5_mech_gait.csv",std::ios::trunc);out<<gaitText;
             }
+            torsoRearHit=static_cast<uint8_t>(f.TorsoRearHit);
             poll_shaker(now);
             // A frozen game thread must not leave the last cues standing.
             bool stale=!tick||now-tick>250;
@@ -700,10 +918,29 @@ class MW5Motion final:public uevr::Plugin {
                 snprintf(line,sizeof(line),"MechShaker event %d: int %d, floats %.3f %.3f %.3f %.3f %.3f %.3f",e.code,e.int0,e.f[0],e.f[1],e.f[2],e.f[3],e.f[4],e.f[5]);
                 event(now,line);
             }
+            if(e.code==mw5::ShakerPartDestruction) {
+                // Whether the mech is destroyed is the game's own verdict (watch_death).
+                // Only when the game offers none does the centre torso stand in for it.
+                // The mech stays in the game as a wreck; parts that break off it only rumble.
+                static const char* parts[]={"head","centre torso","left torso","left arm","left leg","right torso","right arm","right leg"};
+                bool known=e.int0>=mw5::PartHead&&e.int0<=mw5::PartRightLeg,destroyed=e.int0==mw5::PartCenterTorso&&!wrecked&&!deathKnown;
+                bool sideTorso=e.int0==mw5::PartLeftTorso||e.int0==mw5::PartRightTorso;
+                bool fromRear=sideTorso&&(torsoRearHit>>(e.int0==mw5::PartRightTorso?1:0)&1)!=0;
+                if(events.is_open())event(now,std::string(wrecked?"wreck lost: ":destroyed?"mech destroyed (centre torso rule): ":"part destroyed: ")+(known?parts[e.int0]:"unknown part")+(sideTorso&&!wrecked?fromRear?" (hit from the rear)":" (hit from the front)":""));
+                if((e.int0==mw5::PartLeftTorso||e.int0==mw5::PartRightTorso)&&!wrecked)sideTorsoLost=now;
+                if(destroyed){haptics.mech_destroyed(hapticSettings);wrecked=hapticSettings.parts;}
+                else haptics.part_destroyed(e.int0,hapticSettings,wrecked,fromRear);
+                return;
+            }
             if(e.code!=mw5::ShakerPowering)return;
-            haptics.power_event(e.int0);
             static const char* phases[]={"initialising","powering up","shutting down"};
-            if(events.is_open())event(now,std::string("mech power: ")+(e.int0>=0&&e.int0<=2?phases[e.int0]:"unknown phase"));
+            bool death=wrecked&&e.int0==mw5::PowerDown;
+            if(events.is_open())event(now,std::string("mech power: ")+(e.int0>=0&&e.int0<=2?phases[e.int0]:"unknown phase")+(death?" (mech destroyed: no shutdown vibration)":""));
+            // The game also reports a shutdown when the mech is destroyed; the
+            // destruction rumble plays instead. A start-up means a working mech again.
+            if(death)return;
+            wrecked=false;
+            haptics.power_event(e.int0);
         });
         if(!wasOpen&&shaker.view&&events.is_open())event(now,"MechShaker event buffer found: power-up and shutdown vibration available");
         shakerFound=shaker.view!=nullptr;
@@ -755,6 +992,7 @@ public:
                   "MascEngaged,MascGauge,JumpJetState,HeatPercent,Discontinuities,Gear,AbsActive,EngineRpm,"
                   "GroundSpeedKmh,BouncePeakG,HeaveFactor,SafetyGain\n";
             g_notesEnabled=events.is_open();
+            g_deathProbe=events.is_open()&&setting(cfg,"DebugDeathProbe",0,0,1)!=0;
             char line[400];
             snprintf(line,sizeof(line),"MW5 Motion %s debug log. SimHub %s %s:%d. CockpitYawOffsetDeg=%g, smoothing Hz: position=%g velocity=%g acceleration=%g angular=%g, %d rows/s",
                 kVersion,external.enabled?"on":"off",external.ip.c_str(),external.port,settings.yawOffsetDeg,settings.positionHz,settings.velocityHz,settings.accelerationHz,settings.angularHz,rowHz);
@@ -793,6 +1031,7 @@ public:
         if(!sample_guarded(&s,dt,&state)){s={};g_mech={};++readFaults;}
         else reader=static_cast<int>(state);
         s.timestampMs=GetTickCount64();++samples;if(s.valid)++validSamples;
+        if(g_deathProbe&&!probe_guarded()){g_deathProbe=false;g_probe={};note("death probe: a read failed; the probe is switched off");}
         bool renamed=update_identity(s);
         drain_panel();
         mw5::ease_settings(settings,target,dt);

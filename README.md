@@ -4,7 +4,7 @@ MW5 Motion is a [UEVR](https://github.com/praydog/UEVR) plugin that sends motion
 and haptic effects from MechWarrior 5: Mercenaries to
 [SimHub](https://www.simhubdash.com/) for motion platforms.
 
-The current version is 0.9.0, and the plugin is still in development. It was
+The current version is 0.11.3, and the plugin is still in development. It was
 tested on one 3DOF platform with the MechWarriorVR mod. The plugin needs no MW5
 mod and works with or without mods such as YetAnotherMechlab.
 
@@ -32,7 +32,7 @@ any injury, death, damage or loss that results from its use. The full terms are
 in the [LICENSE](LICENSE) file. If you do not accept these terms, do not use the
 software.
 
-## The plugin sends motion and four kinds of effect to SimHub
+## The plugin sends motion and five kinds of effect to SimHub
 
 | SimHub | Source in the game |
 | --- | --- |
@@ -40,11 +40,23 @@ software.
 | Gear Change effect | MASC or a supercharger switches on or off |
 | Engine Vibrations effect | Jump jets, running MASC, power-up and shutdown |
 | ABS effect | Short warning taps while MASC is close to damage |
+| Kick in the motion | A part of the mech is destroyed |
 | Vehicle name | A speed band or the chassis, which selects the motion profile |
 
 The MASC vibration becomes rougher as the gauge fills. The warning taps become
 faster from the warning point of the game to the damage point. The power-up and
 shutdown vibrations need MechWarriorVR with the MechShakerRelay mod.
+
+A destroyed part tilts the platform for a moment towards the side that was
+lost, with a rough burst of engine vibration. An arm gives the lightest kick, a
+leg a stronger one, and a side torso the strongest of the three. A side torso
+also tips the nose up when it was hit from the front, and down when it was hit
+from the rear. The part effects need MechWarriorVR with the MechShakerRelay mod.
+
+A destroyed mech only vibrates, because its fall is already in the motion. The
+plugin asks the game whether the mech is dead and why. A cored mech, or one that
+loses its engine with a side torso, gets a rough rumble of three seconds. A
+pilot who ejects from an intact mech gets a short, lighter one.
 
 SimHub also receives the MASC gauge, the jump jet state, heat, chassis and
 variant as custom properties for dashboards.
@@ -112,6 +124,11 @@ every change to `mw5_motion.cfg`.
 - The **Smoothing** group sets the four smoothing values.
 - The **Jump jets and MASC** and **Power-up and shutdown** groups switch each
   effect on or off and set its levels and times.
+- The **Part destruction** group sets the kick strength and the share for each
+  kind of part.
+- The **Test effects** group has one button for every effect, so that you can
+  feel and tune an effect without waiting for it in a fight. The buttons work
+  while you sit in a mech in a mission.
 - The **Telemetry** group shows the live values: the mech and the vehicle name
   that are reported to SimHub, speed, angles, forces, the comfort cap and the
   effects that are sent.
