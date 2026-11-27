@@ -1,36 +1,21 @@
 # MW5 Motion
 
-MW5 Motion is a [UEVR](https://github.com/praydog/UEVR) plugin that sends motion telemetryb
-and haptic effects from MechWarrior 5: Mercenaries to
+MW5 Motion is a [UEVR](https://github.com/praydog/UEVR) plugin that sends motion
+telemetry and haptic effects from MechWarrior 5: Mercenaries to
 [SimHub](https://www.simhubdash.com/) for motion platforms.
 
 The current version is 0.14.0, and the plugin is still in development. It was
 tested on one 3DOF platform with the MechWarriorVR mod. The plugin needs no MW5
 mod and works with or without mods such as YetAnotherMechlab.
 
-## You use this plugin at your own risk
+## Support development, share feedback and get support!
 
-**Motion platforms can cause serious injury and damage to property.** This
-plugin controls the movement of a machine that carries a person. A software
-error, a wrong setting or an unexpected event in the game can cause sudden and
-violent movement.
+I hope that you enjoy my work and are having tons of fun. This is a passion
+project and will always remain free. If you wish to support me you can always
+buy me a coffee: <https://ko-fi.com/psycho063>.
 
-- You alone are **responsible for the safe use** of your platform and for
-  everyone who is near it.
-- You should keep an **emergency stop within reach** and keep people, pets and
-  objects away from the platform while it moves.
-- You should **start with low gains and low limits** in SimHub and raise them in
-  small steps.
-- You should **test every new version and every changed setting** at low
-  strength before normal use.
-- You should **not use the plugin** if you are pregnant or have a heart, back or
-  neck condition, or any condition that sudden movement could make worse.
-
-This software is provided "as is", without warranty of any kind. To the fullest
-extent that the law allows, the authors and contributors accept no liability for
-any injury, death, damage or loss that results from its use. The full terms are
-in the [LICENSE](LICENSE) file. If you do not accept these terms, do not use the
-software.
+The plugin has a dedicated support channel on the official MechWarriorVR mod
+Discord server: <https://discord.gg/9wc2cgFJWf>.
 
 ## The plugin sends motion and six kinds of effect to SimHub
 
@@ -63,7 +48,8 @@ pilot who ejects from an intact mech gets a short, lighter one.
 Each footstep thumps the left or the right side of the platform, and heavier
 mechs stomp harder. The thumps use the Suspension effect of SimHub, which you
 have to switch on in each motion profile. SimHub plays that effect only while
-the mech moves. The plugin reads from the animation of the mech which foot came down.
+the mech moves. The plugin reads from the animation of the mech which foot came
+down.
 
 SimHub also receives the MASC gauge, the jump jet state, heat, chassis and
 variant as custom properties for dashboards.
@@ -79,6 +65,30 @@ variant as custom properties for dashboards.
 
 A chassis that is listed under `SpecificChassis` is sent as `MW5 <Chassis>`, so
 that it can have a profile of its own.
+
+## You use this plugin at your own risk
+
+**Motion platforms can cause serious injury and damage to property.** This
+plugin controls the movement of a machine that carries a person. A software
+error, a wrong setting or an unexpected event in the game can cause sudden and
+violent movement.
+
+- You alone are **responsible for the safe use** of your platform and for
+  everyone who is near it.
+- You should keep an **emergency stop within reach** and keep people, pets and
+  objects away from the platform while it moves.
+- You should **start with low gains and low limits** in SimHub and raise them in
+  small steps.
+- You should **test every new version and every changed setting** at low
+  strength before normal use.
+- You should **not use the plugin** if you are pregnant or have a heart, back or
+  neck condition, or any condition that sudden movement could make worse.
+
+This software is provided "as is", without warranty of any kind. To the fullest
+extent that the law allows, the authors and contributors accept no liability for
+any injury, death, damage or loss that results from its use. The full terms are
+in the [LICENSE](LICENSE) file. If you do not accept these terms, do not use the
+software.
 
 ## Installing takes five steps
 
@@ -254,7 +264,8 @@ has a new telemetry signature.
 - [UEVR](https://github.com/praydog/UEVR) was made by praydog.
 - The [MechWarriorVR](https://www.nexusmods.com/mechwarrior5mercenaries/mods/1009)
   mod and [MW5-UEVR-Plugins](https://github.com/sicsix/MW5-UEVR-Plugins) were made
-  by sicsix, perq and myself (psycho063). This plugin follows the cockpit component of that mod.
+  by sicsix, perq and myself (psycho063). This plugin follows the cockpit
+  component of that mod.
 
 ## Licence
 
