@@ -40,6 +40,10 @@ struct Sample {
     bool dead{}, deathKnown{};
     // Bit 0: the last armour hit on the left torso came from behind; bit 1: the right torso.
     uint8_t torsoRearHit{};
+    // Footsteps from the animation: how often each foot has come down since the
+    // mech was entered. stepsKnown is false when the animation cannot be read.
+    uint32_t leftSteps{}, rightSteps{};
+    bool stepsKnown{};
     uint8_t deathCause{};
     int32_t mascType{}, jetState{};
     float mascGauge{}, mascWarningPoint{}, mascDamagePoint{};
@@ -112,6 +116,8 @@ struct Frame {
     int32_t JumpJetsInstalled{}, JumpJetState{}, JumpStarted{}, JumpEnded{};
     float HeatPercent{};
     int32_t MechDead{}, DeathCause{}, DeathKnown{}, TorsoRearHit{};
+    uint32_t LeftSteps{}, RightSteps{};
+    int32_t StepsKnown{};
 };
 class Sampler {
 public:

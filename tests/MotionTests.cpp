@@ -119,7 +119,7 @@ int main(){
 
     // Haptic mapping onto the standard fields SimHub's stock effects read.
     using Packet=SimHubExternalTelemetrySender::SHTelemetryPacket;
-    check(sizeof(Packet)==644,"SimHub packet size");
+    check(sizeof(Packet)==660,"SimHub packet size");
     HapticSettings hs{};HapticState state{};Frame h{};
     h.OutputActive=h.FrameValid=1;h.DeltaTime=0.01f;h.MascInstalled=1;h.MascWarningPoint=0.55f;h.MascDamagePoint=0.75f;
     auto packet=[&]{state.update(h,hs);return external_packet(h,1,2,3,4.0,state,hs);};
@@ -139,10 +139,12 @@ int main(){
     h.MascEngaged=0;check(taps(0.8f).second==0,"ABS stops when MASC is switched off");
     h.MascEngaged=1;h.MascInstalled=0;check(taps(0.8f).second==0,"no ABS without MASC fitted");
     h.MascInstalled=1;hs.abs=false;check(taps(0.8f).second==0,"MascWarningAbsEnable 0 switches the taps off");
-    // MASC running is an engine vibration that gets rougher (lower RPM) as the gauge fills.
+    // MASC running is an engine vibration only from the warning point on, and gets rougher (lower RPM) towards the damage point.
     hs=HapticSettings{};state={};
-    h.MascGauge=0;check(near(packet().EngineRpm,9000),"MASC on, empty gauge: 90% RPM");
-    h.MascGauge=0.375f;check(near(packet().EngineRpm,7000),"MASC RPM falls as the gauge fills");
+    h.MascGauge=0;check(packet().EngineRpm==0,"MASC on, empty gauge: no vibration");
+    h.MascGauge=0.5f;check(packet().EngineRpm==0,"still none just below the warning point");
+    h.MascGauge=0.55f;check(near(packet().EngineRpm,9000,1),"at the warning point: 90% RPM");
+    h.MascGauge=0.65f;check(near(packet().EngineRpm,7000,1),"MASC RPM falls as the gauge fills towards damage");
     h.MascGauge=0.75f;check(near(packet().EngineRpm,5000),"MASC RPM bottoms out at the damage point");
     h.MascGauge=1;check(near(packet().EngineRpm,5000),"MASC RPM stays there beyond it");
     h.JumpJetState=JetsActive;check(near(packet().EngineRpm,8000),"firing jump jets replace the MASC vibration");
@@ -397,11 +399,15 @@ int main(){
     hit.part_destroyed(PartLeftLeg,parts);play(1.3);check(hit.kickElapsed>0&&kick_shape(hit.kickElapsed,hit.kickBack)>0.05,"a leg comes back slowly: still leaning after 1.3 s");play(1);check(hit.kickElapsed<0,"and is done after two");
     hit.part_destroyed(PartLeftArm,parts);play(1.3);check(hit.kickElapsed<0,"while an arm is over by then");
     hit.part_destroyed(PartRightTorso,parts);auto torso=play(2);
-    check(near(torso.roll,3.2,0.05)&&near(torso.heave,-4.8,0.1)&&near(torso.pitch,3.6,0.1)&&std::abs(torso.roll)>std::abs(leg.roll),"a side torso is stronger still");
+    check(near(torso.roll,1.12,0.03)&&near(torso.heave,-4.8,0.1)&&near(torso.pitch,6,0.15)&&torso.pitch>5*torso.roll,"right torso hit from the front: mostly knocked back, with a small lean to the right");
     hit.part_destroyed(PartRightTorso,parts,false,true);auto torsoRear=play(2);
-    check(near(torsoRear.roll,3.2,0.05)&&near(torsoRear.pitch,-3.6,0.1)&&near(torsoRear.heave,-4.8,0.1),"hit from the rear, a side torso tips the nose down instead of up");
+    check(near(torsoRear.roll,-1.12,0.03)&&near(torsoRear.pitch,-6,0.15)&&near(torsoRear.heave,-4.8,0.1),"right torso hit from the rear: mostly thrown forward, with a small lean to the left");
+    hit.part_destroyed(PartLeftTorso,parts);auto leftFront=play(2);hit.part_destroyed(PartLeftTorso,parts,false,true);auto leftRear=play(2);
+    check(near(leftFront.roll,-1.12,0.03)&&near(leftFront.pitch,6,0.15)&&near(leftRear.roll,1.12,0.03)&&near(leftRear.pitch,-6,0.15),"left torso: back and to the left from the front, forward and to the right from the rear");
     hit.part_destroyed(PartLeftArm,parts,false,true);check(play(2).pitch==0,"the direction only matters for side torsos");
     Sample rearHit=base();rearHit.torsoRearHit=2;check(Sampler{}.update(rearHit,raw()).TorsoRearHit==2,"which torso was hit from behind reaches the frame");
+    Sample walked=base();walked.leftSteps=7;walked.rightSteps=6;walked.stepsKnown=true;Frame counted=Sampler{}.update(walked,raw());
+    check(counted.LeftSteps==7&&counted.RightSteps==6&&counted.StepsKnown==1,"the step counters of each foot reach the frame");
     hit.part_destroyed(PartHead,parts);auto head=play(2);
     check(head.roll==0&&near(head.pitch,15,0.4)&&head.heave==0,"the head knocks the nose up, to neither side");
     hit.part_destroyed(PartCenterTorso,parts);
@@ -417,12 +423,12 @@ int main(){
     check(wreck.roll==0&&wreck.heave==0&&near(wreck.rpmFirst,4000,1)&&hit.rpm==0,"a part breaking off the wreck only rumbles lightly");
     // A side torso takes its arm with it: one hit, the stronger one, whatever the order.
     hit.part_destroyed(PartLeftTorso,parts);play(0.05);hit.part_destroyed(PartLeftArm,parts);
-    check(near(hit.kickRoll,-3.2,0.01),"an arm right after its torso does not replace the torso's kick");play(2);
+    check(near(hit.kickPitch,6,0.01),"an arm right after its torso does not replace the torso's kick");play(2);
     hit.part_destroyed(PartLeftArm,parts);play(0.05);hit.part_destroyed(PartLeftTorso,parts);
-    check(near(hit.kickRoll,-3.2,0.01),"a torso right after its arm takes over");
+    check(near(hit.kickPitch,6,0.01),"a torso right after its arm takes over");
     play(2);
-    parts.partStrength=10;hit.part_destroyed(PartLeftTorso,parts);check(near(hit.kickRoll,-8,0.01)&&near(hit.kickHeave,-25,0.01),"no kick exceeds the limits");play(2);
-    parts.partStrength=0.5;hit.part_destroyed(PartLeftTorso,parts);check(near(hit.kickRoll,-1.6,0.01),"strength scales the kick");play(2);
+    parts.partStrength=10;hit.part_destroyed(PartLeftTorso,parts);check(near(hit.kickRoll,-2.8,0.01)&&near(hit.kickPitch,12.5,0.01)&&near(hit.kickHeave,-25,0.01),"no kick exceeds the limits");play(2);
+    parts.partStrength=0.5;hit.part_destroyed(PartLeftTorso,parts);check(near(hit.kickPitch,3,0.01),"strength scales the kick");play(2);
     parts.partStrength=1;parts.partVibration=false;hit.part_destroyed(PartLeftArm,parts);
     auto silent=play(2);check(near(silent.roll,-1.6,0.05)&&silent.rpmFirst==0,"PartVibrationEnable 0 keeps the kick and drops the burst");
     parts.partVibration=true;parts.parts=false;hit.part_destroyed(PartLeftTorso,parts);hit.mech_destroyed(parts);
@@ -452,5 +458,19 @@ int main(){
     for(int i=0;i<200;++i){tested.update(moving,ts);if(tested.absActive&&!wasTapping)++testTaps;wasTapping=tested.absActive;}
     check(testTaps>=7&&testTaps<=9,"ABS test: testTaps at the middle rate for two seconds");step(5);check(!tested.absActive,"then none");
     tested.testJets=2;Frame away=moving;away.OutputActive=0;tested.update(away,ts);check(tested.testJets==0,"tests are dropped while the output is off");
+    // Footsteps: a thump on the wheels of one side, sized by the weight class of the mech.
+    check(near(stomp_strength(ts,"Light"),0.25)&&near(stomp_strength(ts,"Medium"),0.5)&&near(stomp_strength(ts,"heavy"),0.75)&&near(stomp_strength(ts,"Assault"),1)&&near(stomp_strength(ts,""),0.5),"heavier classes stomp harder; an unknown class counts as medium");
+    HapticState steps{};steps.stomp(true,stomp_strength(ts,"Assault"),ts);steps.update(moving,ts);
+    auto wheels=external_packet(moving,1,2,3,4,steps,ts);
+    check(near(wheels.SuspensionVelocityFrontLeftMps,0.5)&&near(wheels.SuspensionVelocityRearLeftMps,0.5)&&wheels.SuspensionVelocityFrontRightMps==0&&wheels.SuspensionVelocityRearRightMps==0,"left foot of an assault mech: a full thump on the left wheels only");
+    for(int i=0;i<10;++i)steps.update(moving,ts);
+    check(steps.suspension[0]>0.1f&&steps.suspension[0]<0.25f,"which dies away within a tenth of a second or two");
+    steps.stomp(false,stomp_strength(ts,"Light"),ts);steps.update(moving,ts);
+    check(near(steps.suspension[1],0.125,0.001)&&near(steps.suspension[3],0.125,0.001)&&steps.suspension[0]>0,"right foot of a light mech: a quarter of it on the right wheels, while the left still fades");
+    for(int i=0;i<60;++i)steps.update(moving,ts);
+    check(steps.suspension[0]==0&&steps.suspension[1]==0&&external_packet(moving,1,2,3,4).SuspensionVelocityRearRightMps==0,"all still after half a second, and without steps");
+    steps.stomp(true,50,ts);check(near(steps.thumpSize[0],1),"no thump exceeds the limit");
+    HapticSettings quiet=ts;quiet.stomps=false;HapticState noSteps{};noSteps.stomp(true,1,quiet);noSteps.update(moving,quiet);
+    check(noSteps.suspension[0]==0,"StompEnable 0 switches the footsteps off");
     std::cout<<"All motion tests passed\n";return 0;
 }

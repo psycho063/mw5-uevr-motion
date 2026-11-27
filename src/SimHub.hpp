@@ -17,10 +17,12 @@ struct HapticSettings {
     // SimHub offers RPM effects only with a max RPM. Jump jets report a fixed
     // fraction of it while firing and a lower one during warm-up.
     double engineMaxRpm{10000}, jetLevel{0.8}, jetWarmupLevel{0.4};
-    // MASC running is an engine vibration too. On a platform SimHub's engine effect
-    // is a fast, smooth buzz at high RPM and slow, rough shakes at low RPM, so MASC
-    // starts high (empty gauge) and falls to mascRpmDamage at the damage point:
-    // rougher the closer it is to damage. Jump jets replace it while they run.
+    // MASC is an engine vibration too, but only as a warning: nothing while the
+    // gauge is below the game's warning point, so normal movement is undisturbed.
+    // On a platform SimHub's engine effect is a fast, smooth buzz at high RPM and
+    // slow, rough shakes at low RPM, so the vibration starts at mascRpmStart at
+    // the warning point and falls to mascRpmDamage at the damage point: rougher
+    // the closer it is to damage. Jump jets replace it while they run.
     bool mascEngine{true};
     double mascRpmStart{0.9}, mascRpmDamage{0.5};
     // ABS is the MASC warning: short taps, one SimHub ABS pulse each, at absMinHz
@@ -49,8 +51,20 @@ struct HapticSettings {
     double partStrength{1}, partArm{0.4}, partLeg{0.6}, partSideTorso{0.8}, partCore{1};
     double partRollDeg{4}, partRollLimitDeg{8}, partPitchDeg{15}, partPitchLimitDeg{25};
     double partDropMs2{6}, partDropLimitMs2{25};
-    // The share of the pitch kick that a lost side torso adds to its roll.
-    double partSidePitch{0.3};
+    // A side torso is mostly a tilt forwards or backwards, away from the blast: a
+    // hit from the front tips the nose up, a hit from the rear tips it down.
+    // partTorsoPitch is its share of the pitch kick. The lean to the side is
+    // much smaller, partTorsoRoll of the roll kick: towards the lost side for a
+    // hit from the front, away from it for a hit from the rear.
+    double partTorsoPitch{0.5}, partTorsoRoll{0.35};
+    // Footsteps are a thump through SimHub's Suspension effect, which has a wheel
+    // at each corner: the left wheels for the left foot, the right wheels for the
+    // right. The strength is a share of stompMps (a suspension velocity) by the
+    // weight class of the mech; no thump exceeds stompLimitMps. The steps arrive
+    // as MechShaker "Footstep" events.
+    bool stomps{true};
+    double stompLight{0.25}, stompMedium{0.5}, stompHeavy{0.75}, stompAssault{1};
+    double stompMps{0.5}, stompLimitMps{1};
 };
 // The phase a MechShaker "Powering" event carries in its first value.
 enum PowerPhase : int { PowerInitialising=0, PowerUp=1, PowerDown=2 };
@@ -85,6 +99,17 @@ struct HapticState {
     double burstFrom{}, burstTo{}, burstSeconds{}, burstElapsed{-1};
     // Effects started from the test buttons of the settings panel, seconds left.
     double testGear{}, testAbs{}, testJets{}, testMasc{};
+    // Footsteps, through the Suspension effect. Front left, front right, rear
+    // left, rear right wheel: seconds since the thump started (-1 when idle), its
+    // size and the suspension velocity reported, both m/s.
+    double thump[4]{-1,-1,-1,-1},thumpSize[4]{};float suspension[4]{};
+    static constexpr double kThumpSeconds=0.5;
+    // One foot coming down, `strength` a share of the full thump.
+    void stomp(bool left,double strength,const HapticSettings& cfg) {
+        if(!cfg.stomps)return;
+        double size=std::clamp(cfg.stompMps*strength,0.0,cfg.stompLimitMps);
+        for(int wheel:{left?0:1,left?2:3}){thump[wheel]=0;thumpSize[wheel]=size;}
+    }
     static constexpr double kTestMascSeconds=3;
     // A "Powering" event arrived: start that ramp, replacing any still playing.
     void power_event(int phaseCode) {
@@ -109,21 +134,23 @@ struct HapticState {
         if(!cfg.parts||part<PartHead||part>PartRightLeg)return;
         if(wreck){burstFrom=burstTo=0.4;burstSeconds=0.3;burstElapsed=0;return;}
         if(part==PartCenterTorso)return;
-        // The platform lurches towards the side that was lost: left side down for a left part.
+        // Towards the side that was lost: left side down for a left part.
         double side=part==PartLeftTorso||part==PartLeftArm||part==PartLeftLeg?-1:part==PartHead?0:1;
-        // jolt: the share of the pitch kick, nose up as if knocked back. A lost
-        // side torso has a little of it, towards the side the hit did not come from.
-        double factor{},drop{},jolt{},level{},seconds{},back=kKickBack;
+        // jolt: the share of the pitch kick, nose up as if knocked back. sway: the
+        // share of the roll kick.
+        double factor{},drop{},jolt{},sway=1,level{},seconds{},back=kKickBack;
         switch(part) {
         case PartLeftArm:case PartRightArm:factor=cfg.partArm;level=0.35;seconds=0.3;break;
         case PartLeftLeg:case PartRightLeg:factor=cfg.partLeg;drop=-1;level=0.3;seconds=0.5;back=kKickBackLeg;break; // the mech sags and recovers slowly
-        case PartLeftTorso:case PartRightTorso:factor=cfg.partSideTorso;jolt=fromRear?-cfg.partSidePitch:cfg.partSidePitch;drop=-1;level=0.25;seconds=0.8;break;
+        case PartLeftTorso:case PartRightTorso:
+            factor=cfg.partSideTorso;jolt=fromRear?-cfg.partTorsoPitch:cfg.partTorsoPitch;sway=fromRear?-cfg.partTorsoRoll:cfg.partTorsoRoll;
+            drop=-1;level=0.25;seconds=0.8;break;
         default:factor=cfg.partCore;jolt=1;level=0.2;seconds=0.6;break; // head: knocked back, nose up
         }
         double lean=std::clamp(cfg.partRollDeg*cfg.partStrength*factor,0.0,cfg.partRollLimitDeg);
         double tip=std::clamp(cfg.partPitchDeg*cfg.partStrength*factor,0.0,cfg.partPitchLimitDeg);
         double fall=std::clamp(cfg.partDropMs2*cfg.partStrength*factor,0.0,cfg.partDropLimitMs2);
-        impact(lean*side,tip*jolt,fall*drop,level,level,seconds,back);
+        impact(lean*side*sway,tip*jolt,fall*drop,level,level,seconds,back);
     }
     // The mech is destroyed. Vibration only: the fall of the mech is already in
     // the motion. It replaces the shutdown ramp the game also reports.
@@ -148,12 +175,18 @@ struct HapticState {
             // A power ramp or a kick waits through a pause and is dropped when the mech is gone.
             if(!f.FrameValid){mascGear=false;powerPhase=-1;kickElapsed=burstElapsed=-1;}
             testGear=testAbs=testJets=testMasc=0;
+            for(int i=0;i<4;++i){thump[i]=-1;suspension[i]=0;}
             absActive=false;rpm=phase=0;return;
         }
         auto running=[&](double& left){bool on=left>0;left=std::max(0.0,left-f.DeltaTime);return on;};
         double mascTestLeft=testMasc;
         bool gearTest=running(testGear),absTest=running(testAbs),jetTest=running(testJets),mascTest=running(testMasc);
         mascGear=(f.MascEngaged!=0)!=gearTest;
+        // A thump is a suspension velocity that jumps up and dies away.
+        for(int i=0;i<4;++i) {
+            suspension[i]=thump[i]<0?0:static_cast<float>(thumpSize[i]*std::exp(-thump[i]/0.1));
+            if(thump[i]>=0&&(thump[i]+=f.DeltaTime)>=kThumpSeconds)thump[i]=-1;
+        }
         double ramp=0;
         if(powerPhase>=0) {
             double length=powerPhase==PowerInitialising?cfg.powerInitSeconds:powerPhase==PowerUp?cfg.powerUpSeconds:cfg.powerDownSeconds;
@@ -169,12 +202,18 @@ struct HapticState {
             if(burstSeconds<=0||burstElapsed>=burstSeconds)burstElapsed=-1;
             else {burst=cfg.engineMaxRpm*(burstFrom+(burstTo-burstFrom)*burstElapsed/burstSeconds);burstElapsed+=f.DeltaTime;}
         }
+        // MASC vibrates only from the warning point on. A fitting that reports no
+        // warning point vibrates all the time it runs, as there is nothing to wait for.
+        bool mascKnown=f.MascWarningPoint>0;
+        bool mascRuns=cfg.mascEngine&&f.MascEngaged&&(!mascKnown||f.MascGauge>=f.MascWarningPoint);
         // A part being destroyed outranks everything; then jump jets, MASC and the power ramp.
         if(burst>=0&&cfg.partVibration)rpm=burst;
         else if(f.JumpJetState==JetsActive||jetTest)rpm=cfg.engineMaxRpm*cfg.jetLevel;
         else if(f.JumpJetState==JetsWarmup)rpm=cfg.engineMaxRpm*cfg.jetWarmupLevel;
-        else if((cfg.mascEngine&&f.MascEngaged)||mascTest) {
-            double fill=mascTest?1-mascTestLeft/kTestMascSeconds:f.MascDamagePoint>0?std::clamp(f.MascGauge/f.MascDamagePoint,0.0f,1.0f):0;
+        else if(mascRuns||mascTest) {
+            double range=f.MascDamagePoint-f.MascWarningPoint;
+            double fill=mascTest?1-mascTestLeft/kTestMascSeconds:mascKnown?(range>0?(f.MascGauge-f.MascWarningPoint)/range:1):
+                f.MascDamagePoint>0?f.MascGauge/f.MascDamagePoint:0;
             rpm=cfg.engineMaxRpm*(cfg.mascRpmStart+(cfg.mascRpmDamage-cfg.mascRpmStart)*std::clamp(fill,0.0,1.0));
         }
         else rpm=cfg.powerEngine?ramp:0;
@@ -211,6 +250,11 @@ inline Identity parse_mech_tag(const std::string& tag) {
 }
 inline bool same_text(const std::string& a,const std::string& b) {
     return a.size()==b.size()&&std::equal(a.begin(),a.end(),b.begin(),[](unsigned char x,unsigned char y){return std::tolower(x)==std::tolower(y);});
+}
+// How hard a mech of this weight class stomps, as a share of the full thump.
+inline double stomp_strength(const HapticSettings& cfg,const std::string& weightClass) {
+    return same_text(weightClass,"Light")?cfg.stompLight:same_text(weightClass,"Heavy")?cfg.stompHeavy:
+           same_text(weightClass,"Assault")?cfg.stompAssault:cfg.stompMedium;
 }
 struct ProfileSettings {
     std::array<double,3> limitsKmh{60,75,100};   // upper limits of Slow, Standard and Fast
@@ -256,6 +300,9 @@ inline SimHubExternalTelemetrySender::SHTelemetryPacket external_packet(
     // Gear Change fires on any gear change: 1 -> 2 when MASC engages, 2 -> 1 when it stops.
     p.Gear[0]=cfg.gear&&haptics.mascGear?'2':'1';p.MaxGears=2;
     p.AbsActive=cfg.abs&&haptics.absActive;
+    // Suspension: the footsteps.
+    p.SuspensionVelocityFrontLeftMps=haptics.suspension[0];p.SuspensionVelocityFrontRightMps=haptics.suspension[1];
+    p.SuspensionVelocityRearLeftMps=haptics.suspension[2];p.SuspensionVelocityRearRightMps=haptics.suspension[3];
     p.MascInstalled=static_cast<uint8_t>(f.MascInstalled);p.MascEngaged=static_cast<uint8_t>(f.MascEngaged);
     p.MascStarted=static_cast<uint8_t>(f.MascStarted);p.MascEnded=static_cast<uint8_t>(f.MascEnded);
     p.MascType=static_cast<uint8_t>(f.MascType);

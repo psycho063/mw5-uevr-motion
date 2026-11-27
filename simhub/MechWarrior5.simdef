@@ -7,7 +7,7 @@
   },
   "TelemetryDefinition": {
     "LayoutMajorVersion": 2,
-    "LayoutMinorVersion": 1,
+    "LayoutMinorVersion": 2,
     "ProtocolVersion": 1,
     "Fields": [
       {
@@ -230,12 +230,28 @@
       {
         "FieldType": "AbsActive",
         "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "SuspensionVelocityFrontLeftMps",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "SuspensionVelocityFrontRightMps",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "SuspensionVelocityRearLeftMps",
+        "TypeName": "StandardField"
+      },
+      {
+        "FieldType": "SuspensionVelocityRearRightMps",
+        "TypeName": "StandardField"
       }
     ]
   },
   "ManagerVersion": 3,
   "GameSignature": 3943313213,
-  "TelemetrySignature": 3615171145,
+  "TelemetrySignature": 150825839,
   "Name": "MechWarrior 5 Mercenaries (UEVR)",
   "UniqueId": "27a2e5cd-aa4c-431e-8c6e-d9a5dcd9f71f",
   "DefaultUDPPort": 20779,

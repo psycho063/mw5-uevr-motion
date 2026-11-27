@@ -161,8 +161,8 @@ local function jets_and_masc()
     text("Vibration levels: higher is faster and smoother, lower is slower and rougher.")
     slider(general, "Jump jets firing", "JumpJetLevel")
     slider(general, "Jump jets warming up", "JumpJetWarmupLevel")
-    check("Vibration while MASC runs", "MascVibrationEnable")
-    slider(general, "MASC with an empty gauge", "MascVibrationStartLevel")
+    check("Vibration while MASC is past its warning point", "MascVibrationEnable")
+    slider(general, "MASC at the warning point", "MascVibrationStartLevel")
     slider(general, "MASC at the damage point", "MascVibrationDamageLevel")
     check("Gear Change effect when MASC switches", "HapticGearEnable")
     check("ABS warning taps before MASC damage", "MascWarningAbsEnable")
@@ -186,6 +186,25 @@ local function power()
     slider(general, "Shutdown (seconds)", "PowerDownSeconds", "%.1f")
     defaults("power", {"PowerVibrationEnable", "PowerUpStartLevel", "PowerUpEndLevel", "PowerDownStartLevel",
         "PowerDownEndLevel", "PowerInitSeconds", "PowerUpSeconds", "PowerDownSeconds"})
+end
+
+local function footsteps()
+    local from_animation = (status.frame or {}).StepsKnown == 1
+    if status.chassis ~= "" then
+        if from_animation then text("The plugin reads each foot from the animation of the mech.")
+        elseif status.shaker then text("The animation cannot be read. The feet alternate with each MechShaker footstep.")
+        else text("No footsteps available: neither the animation nor MechShaker events can be read.") end
+    end
+    text("Each step thumps the left or the right side of the platform.")
+    text("Switch on the Suspension effect in the SimHub profile to feel it.")
+    check("Thump on each footstep", "StompEnable")
+    text("Strength by weight class. Higher: a harder stomp. Lower: a softer one.")
+    slider(general, "Light", "StompLightStrength")
+    slider(general, "Medium", "StompMediumStrength")
+    slider(general, "Heavy", "StompHeavyStrength")
+    slider(general, "Assault", "StompAssaultStrength")
+    if status.chassis ~= "" and status.weight ~= "" then text("This mech is " .. status.weight .. ".") end
+    defaults("stomps", {"StompEnable", "StompLightStrength", "StompMediumStrength", "StompHeavyStrength", "StompAssaultStrength"})
 end
 
 local function heading(label)
@@ -248,6 +267,13 @@ local function tests()
     test_button("Warning taps", "abs")
     imgui.same_line()
     test_button("Jump jets", "jets")
+    heading("Footsteps")
+    text("These need speed: SimHub plays suspension effects only while the mech moves.")
+    test_button("Left foot", "stomp_left")
+    imgui.same_line()
+    test_button("Right foot", "stomp_right")
+    imgui.same_line()
+    test_button("Both feet", "stomp_both")
 end
 
 local jet_states = {[0] = "off", [1] = "warming up", [2] = "firing", [3] = "cooling down"}
@@ -370,6 +396,7 @@ uevr.sdk.callbacks.on_draw_ui(function()
     group("Smoothing", smoothing)
     group("Jump jets and MASC", jets_and_masc)
     group("Power-up and shutdown", power)
+    group("Footsteps", footsteps)
     group("Part destruction", part_destruction)
     group("Test effects", tests)
     group("Telemetry", telemetry)

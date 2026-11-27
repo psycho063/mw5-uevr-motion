@@ -14,7 +14,7 @@ $manifest.UniqueId=[guid]$inputDefinition.UniqueId
 $manifest.DefaultUDPPort=$inputDefinition.DefaultUDPPort
 $manifest.TelemetryBehaviour.GameFamily=$inputDefinition.TelemetryBehaviour.GameFamily
 $manifest.TelemetryBehaviour.DefaultMaxSpeed=$inputDefinition.TelemetryBehaviour.DefaultMaxSpeed
-$manifest.TelemetryBehaviour.HasRumbleStripsContactSurface=$false
+$manifest.TelemetryBehaviour.HasRumbleStripsContactSurface=[bool]$inputDefinition.TelemetryBehaviour.HasRumbleStripsContactSurface
 # SimHub's editor creates V3 definitions. A V1 definition never reports RPM, so
 # RPM effects such as Engine vibration stay unavailable.
 $manifest.ManagerVersion=if($inputDefinition.ManagerVersion){$inputDefinition.ManagerVersion}else{3}

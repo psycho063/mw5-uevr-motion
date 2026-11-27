@@ -21,12 +21,12 @@ namespace SimHubExternalTelemetrySender
     {
         static constexpr const char* DefinitionUniqueId = "27a2e5cd-aa4c-431e-8c6e-d9a5dcd9f71f";
         static constexpr uint32_t GameSignature = 0xEB0A2F3Du;
-        static constexpr uint32_t TelemetrySignature = 0xD77B2249u;
+        static constexpr uint32_t TelemetrySignature = 0x08FD6B6Fu;
 
         static constexpr uint16_t LayoutMajorVersion = 2;
-        static constexpr uint16_t LayoutMinorVersion = 1;
+        static constexpr uint16_t LayoutMinorVersion = 2;
 
-        static constexpr int ExpectedPacketLength = 644;
+        static constexpr int ExpectedPacketLength = 660;
 
         static constexpr const char* DefaultHost = "127.0.0.1";
         static constexpr uint16_t DefaultPort = 20779;
@@ -227,6 +227,18 @@ namespace SimHubExternalTelemetrySender
 
         // ABS active flag : ABS system currently active (0 or 1)
         uint8_t AbsActive;
+
+        // Suspension Velocity FL (m/s) : Front left Suspension Velocity
+        float SuspensionVelocityFrontLeftMps;
+
+        // Suspension Velocity FR (m/s) : Front right Suspension Velocity
+        float SuspensionVelocityFrontRightMps;
+
+        // Suspension Velocity RL (m/s) : Rear left Suspension Velocity
+        float SuspensionVelocityRearLeftMps;
+
+        // Suspension Velocity RR (m/s) : Rear right Suspension Velocity
+        float SuspensionVelocityRearRightMps;
 
     };
     #pragma pack(pop)

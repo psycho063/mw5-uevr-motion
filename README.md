@@ -4,7 +4,7 @@ MW5 Motion is a [UEVR](https://github.com/praydog/UEVR) plugin that sends motion
 and haptic effects from MechWarrior 5: Mercenaries to
 [SimHub](https://www.simhubdash.com/) for motion platforms.
 
-The current version is 0.11.3, and the plugin is still in development. It was
+The current version is 0.14.0, and the plugin is still in development. It was
 tested on one 3DOF platform with the MechWarriorVR mod. The plugin needs no MW5
 mod and works with or without mods such as YetAnotherMechlab.
 
@@ -32,18 +32,20 @@ any injury, death, damage or loss that results from its use. The full terms are
 in the [LICENSE](LICENSE) file. If you do not accept these terms, do not use the
 software.
 
-## The plugin sends motion and five kinds of effect to SimHub
+## The plugin sends motion and six kinds of effect to SimHub
 
 | SimHub | Source in the game |
 | --- | --- |
 | Motion | The movement of the cockpit, with torso twist and aiming up or down |
 | Gear Change effect | MASC or a supercharger switches on or off |
-| Engine Vibrations effect | Jump jets, running MASC, power-up and shutdown |
+| Engine Vibrations effect | Jump jets, MASC past its warning point, power-up and shutdown |
 | ABS effect | Short warning taps while MASC is close to damage |
+| Suspension effect | Footsteps: a thump on the left or the right side for each step |
 | Kick in the motion | A part of the mech is destroyed |
 | Vehicle name | A speed band or the chassis, which selects the motion profile |
 
-The MASC vibration becomes rougher as the gauge fills. The warning taps become
+The MASC vibration starts at the warning point of the game and becomes rougher
+towards the damage point. The warning taps become
 faster from the warning point of the game to the damage point. The power-up and
 shutdown vibrations need MechWarriorVR with the MechShakerRelay mod.
 
@@ -57,6 +59,11 @@ A destroyed mech only vibrates, because its fall is already in the motion. The
 plugin asks the game whether the mech is dead and why. A cored mech, or one that
 loses its engine with a side torso, gets a rough rumble of three seconds. A
 pilot who ejects from an intact mech gets a short, lighter one.
+
+Each footstep thumps the left or the right side of the platform, and heavier
+mechs stomp harder. The thumps use the Suspension effect of SimHub, which you
+have to switch on in each motion profile. SimHub plays that effect only while
+the mech moves. The plugin reads from the animation of the mech which foot came down.
 
 SimHub also receives the MASC gauge, the jump jet state, heat, chassis and
 variant as custom properties for dashboards.
@@ -124,6 +131,8 @@ every change to `mw5_motion.cfg`.
 - The **Smoothing** group sets the four smoothing values.
 - The **Jump jets and MASC** and **Power-up and shutdown** groups switch each
   effect on or off and set its levels and times.
+- The **Footsteps** group switches the footstep thumps on or off and sets their
+  strength for light, medium, heavy and assault mechs.
 - The **Part destruction** group sets the kick strength and the share for each
   kind of part.
 - The **Test effects** group has one button for every effect, so that you can

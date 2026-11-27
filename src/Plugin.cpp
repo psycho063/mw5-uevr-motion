@@ -26,7 +26,7 @@
 using API=uevr::API;
 using Object=API::UObject;
 namespace {
-constexpr const char* kVersion="0.11.3";
+constexpr const char* kVersion="0.14.0";
 // Set when GaitLearning is on: the reader then also fetches the mech's root
 // transform. Off by default, and nothing of the learner runs while it is off.
 std::atomic_bool g_learning{false};
@@ -128,6 +128,13 @@ struct Mech {
     Object *torsoFront[2]{},*torsoRear[2]{};
     API::UFunction *frontArmor{},*rearArmor{};
     float frontWas[2]{},rearWas[2]{};bool torsoSeen[2]{};uint8_t torsoRearHit{};
+    // Footsteps: the walk and run animations mark the time each foot is on the
+    // ground with the notify states "LeftFoot_Down" and "RightFoot_Down". The
+    // animation instance of the mech's mesh lists the ones active right now.
+    Object* animation{};
+    int32_t notifyList{-1},notifySize{},notifyName{-1};
+    uint64_t leftName{},rightName{},otherNames[8]{};int otherCount{};
+    bool footSeen{},leftDown{},rightDown{};uint32_t leftSteps{},rightSteps{};double animationRetryIn{};
     std::string tag; // "Mech.<WeightClass>.<Chassis>.<Variant>", empty until known
 
     // The mech's gameplay tag, from its data asset: MechData.MechType.TagName.
@@ -198,6 +205,46 @@ struct Mech {
         toWorld=getter(cockpit,L"K2_GetComponentToWorld",sizeof(Transform));
         retryIn=0.5;
     }
+    // The animation instance can appear a moment after the pawn.
+    void find_animation() {
+        animationRetryIn=1;animation=nullptr;notifyList=-1;
+        auto mesh=object(pawn,L"MechMeshComponent");
+        auto instance=call<Object*>(mesh,getter(mesh,L"GetAnimInstance",sizeof(Object*)));
+        if(!instance)return;
+        auto list=instance->get_class()->find_property(L"ActiveAnimNotifyState");
+        if(!list||list->get_class()->get_name()!=L"ArrayProperty")return;
+        auto inner=reinterpret_cast<API::FArrayProperty*>(list)->get_inner();
+        if(!inner||inner->get_class()->get_name()!=L"StructProperty")return;
+        auto type=reinterpret_cast<API::FStructProperty*>(inner)->get_struct();
+        auto name=type->find_property(L"NotifyName");
+        notifySize=type->get_properties_size();
+        if(!name||notifySize<=0||notifySize>4096)return;
+        notifyName=name->get_offset();notifyList=list->get_offset();animation=instance;
+        note("footsteps are read from the animation ("+narrow(instance->get_class()->get_fname()->to_string())+"): each stomp is on the side of the foot that came down");
+    }
+    // Which feet the animation has on the ground. A foot going from up to down
+    // is a step; the same foot listed twice (walk and run blending) is one foot.
+    void read_feet() {
+        struct {const uint8_t* data;int32_t count,capacity;} list{};
+        if(!copy_memory(reinterpret_cast<const uint8_t*>(animation)+notifyList,&list,sizeof(list))||list.count<0||list.count>64)return;
+        bool left=false,right=false;
+        for(int32_t i=0;i<list.count;++i) {
+            uint64_t raw{};
+            if(!copy_memory(list.data+static_cast<size_t>(i)*static_cast<size_t>(notifySize)+notifyName,&raw,sizeof(raw)))return;
+            if(raw==leftName&&leftName){left=true;continue;}
+            if(raw==rightName&&rightName){right=true;continue;}
+            if(std::find(otherNames,otherNames+otherCount,raw)!=otherNames+otherCount)continue;
+            // A name not seen before: look at its text once, then remember the number.
+            API::FName name{};std::memcpy(&name,&raw,sizeof(raw));
+            auto text=name.to_string();
+            if(text==L"LeftFoot_Down"){leftName=raw;left=true;}
+            else if(text==L"RightFoot_Down"){rightName=raw;right=true;}
+            else if(otherCount<8)otherNames[otherCount++]=raw;
+        }
+        // The first look only records where the feet are.
+        if(footSeen){if(left&&!leftDown)++leftSteps;if(right&&!rightDown)++rightSteps;}
+        leftDown=left;rightDown=right;footSeen=true;
+    }
     float stat(int32_t offset) const {
         float v{};return offset>=0&&copy_memory(reinterpret_cast<const uint8_t*>(masc)+offset,&v,sizeof(v))&&std::isfinite(v)?v:0;
     }
@@ -256,6 +303,9 @@ Reader sample_game(mw5::Sample* out,float dt) {
         m.frontWas[i]=front;m.rearWas[i]=rear;m.torsoSeen[i]=true;
     }
     out->torsoRearHit=m.torsoRearHit;
+    if(!m.animation&&(m.animationRetryIn-=dt)<=0)m.find_animation();
+    if(m.animation)m.read_feet();
+    out->stepsKnown=m.animation!=nullptr;out->leftSteps=m.leftSteps;out->rightSteps=m.rightSteps;
     return Reader::Ok;
 }
 bool sample_guarded(mw5::Sample* out,float dt,Reader* state) {
@@ -371,6 +421,106 @@ void probe_game() {
 // A fault in the probe must not disturb the motion: it switches the probe off.
 bool probe_guarded() {
     __try {probe_game();return true;}
+    __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+// Diagnostic, DebugFootProbe = 1 with DebugLog = 1: the walk and run animations
+// mark the time each foot is on the ground with the notify states
+// "LeftFoot_Down" and "RightFoot_Down". Unreal keeps the notify states that are
+// active right now on each animation instance. Once per frame the probe reads
+// those lists on the mech's animated meshes and writes a line to the event log
+// whenever one changes, to show whether they can tell the plugin which foot
+// came down, and when. It only reads and logs; no effect depends on it.
+std::atomic_bool g_footProbe{false};
+struct FootProbe {
+    struct Mesh {
+        Object *component{},*instance{};
+        std::string name,last;
+        int32_t listOffset{-1},elementSize{},nameOffset{-1},classOffset{-1};
+    };
+    Object* pawn{};
+    std::vector<Mesh> meshes;
+    double retryIn{};
+
+    // The layout of the list, from the animation instance's own class.
+    static void layout(Mesh& m) {
+        m.listOffset=m.nameOffset=m.classOffset=-1;
+        auto list=m.instance->get_class()->find_property(L"ActiveAnimNotifyState");
+        if(!list) {
+            // Say what the class does offer, to find the list under another name.
+            std::string offered;
+            for(API::UStruct* c=m.instance->get_class();c&&offered.size()<600;c=c->get_super())
+                for(auto f=c->get_child_properties();f;f=f->get_next()) {
+                    auto field=narrow(f->get_fname()->to_string());
+                    if(field.find("Notif")!=field.npos)offered+=(offered.empty()?"":", ")+field;
+                }
+            note("foot probe: "+m.name+": no ActiveAnimNotifyState; properties with \"Notif\" in the name: "+(offered.empty()?"none":offered));
+            return;
+        }
+        auto kind=narrow(list->get_class()->get_name());
+        if(kind!="ArrayProperty"){note("foot probe: "+m.name+": ActiveAnimNotifyState is a "+kind+", not a list");return;}
+        auto inner=reinterpret_cast<API::FArrayProperty*>(list)->get_inner();
+        if(!inner||narrow(inner->get_class()->get_name())!="StructProperty"){note("foot probe: "+m.name+": the list does not hold structures");return;}
+        auto type=reinterpret_cast<API::FStructProperty*>(inner)->get_struct();
+        auto notifyName=type->find_property(L"NotifyName"),stateClass=type->find_property(L"NotifyStateClass");
+        m.elementSize=type->get_properties_size();
+        if(notifyName)m.nameOffset=notifyName->get_offset();
+        if(stateClass)m.classOffset=stateClass->get_offset();
+        if(m.elementSize>0&&m.elementSize<=4096&&(m.nameOffset>=0||m.classOffset>=0))m.listOffset=list->get_offset();
+        note("foot probe: "+m.name+": list found, "+std::to_string(m.elementSize)+" bytes per entry, name "+(m.nameOffset>=0?"readable":"missing")+
+             ", state class "+(m.classOffset>=0?"readable":"missing"));
+    }
+    void resolve(Object* current) {
+        pawn=current;meshes.clear();retryIn=2;
+        for(auto c:components(pawn)) {
+            auto fn=getter(c,L"GetAnimInstance",sizeof(Object*));
+            if(!fn)continue;
+            Mesh m;m.component=c;m.instance=call<Object*>(c,fn);
+            m.name=narrow(c->get_fname()->to_string());
+            if(!m.instance){note("foot probe: "+m.name+" ("+narrow(c->get_class()->get_fname()->to_string())+") has no animation instance");continue;}
+            note("foot probe: "+m.name+" ("+narrow(c->get_class()->get_fname()->to_string())+") plays "+narrow(m.instance->get_class()->get_fname()->to_string()));
+            layout(m);
+            meshes.push_back(m);
+        }
+        if(meshes.empty())note("foot probe: no animated mesh found on the mech yet");
+    }
+    // The names of the notify states active on one mesh, in list order.
+    static std::string active(const Mesh& m) {
+        struct {const uint8_t* data;int32_t count,capacity;} list{};
+        if(!copy_memory(reinterpret_cast<const uint8_t*>(m.instance)+m.listOffset,&list,sizeof(list)))return "unreadable";
+        if(list.count<0||list.count>64)return "unreadable";
+        std::string names;
+        for(int32_t i=0;i<list.count;++i) {
+            auto entry=list.data+static_cast<size_t>(i)*static_cast<size_t>(m.elementSize);
+            std::string label;
+            API::FName name{};
+            if(m.nameOffset>=0&&copy_memory(entry+m.nameOffset,&name,8))label=narrow(name.to_string());
+            Object* state{};
+            if(m.classOffset>=0&&copy_memory(entry+m.classOffset,&state,sizeof(state))&&state)
+                label+=(label.empty()?"":" ")+("<"+narrow(state->get_class()->get_fname()->to_string())+">");
+            names+=(names.empty()?"":", ")+(label.empty()?std::string("?"):label);
+        }
+        return names.empty()?"none":names;
+    }
+    void step(float dt) {
+        // Meshes and their animation instances can appear a moment after the pawn.
+        if(meshes.empty()&&(retryIn-=dt)<=0)resolve(pawn);
+        for(auto& m:meshes) {
+            if(m.listOffset<0)continue;
+            auto now=active(m);
+            if(now==m.last)continue;
+            m.last=now;
+            note("foot probe: "+m.name+": active notify states: "+now);
+        }
+    }
+};
+FootProbe g_foot;
+void foot_probe_game(float dt) {
+    if(g_foot.pawn!=g_mech.pawn){g_foot={};if(g_mech.isMech)g_foot.resolve(g_mech.pawn);}
+    if(g_foot.pawn)g_foot.step(dt);
+}
+// A fault in the probe must not disturb the motion: it switches the probe off.
+bool foot_probe_guarded(float dt) {
+    __try {foot_probe_game(dt);return true;}
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 struct Feed {
@@ -521,6 +671,10 @@ class MW5Motion final:public uevr::Plugin {
     bool wrecked{}; // the mech was destroyed and lies in the game as a wreck
     bool deathKnown{},deadSeen{};uint64_t deathArmedAt{},sideTorsoLost{};
     uint8_t torsoRearHit{}; // from the latest frame: which side torsos were last hit from behind
+    // Footsteps: the foot of the last step.
+    bool lastStepLeft{};
+    // Footsteps read from the animation: the counters of the last frame handled.
+    bool stepsKnown{},stepsSeen{};uint32_t leftSteps{},rightSteps{};
     // Debug recording, sender thread only.
     std::ofstream rows,events;int rowHz{20};
     uint64_t started{},nextRow{},recorded{},lastFaults{};
@@ -594,6 +748,9 @@ class MW5Motion final:public uevr::Plugin {
         h.partLeg=live("PartLegFactor");
         h.partSideTorso=live("PartSideTorsoFactor");
         h.partCore=live("PartCoreFactor");
+        h.stomps=live("StompEnable")!=0;
+        h.stompLight=live("StompLightStrength");h.stompMedium=live("StompMediumStrength");
+        h.stompHeavy=live("StompHeavyStrength");h.stompAssault=live("StompAssaultStrength");
         return h;
     }
     // Game thread. Carries out what the settings panel asked for and prepares
@@ -667,6 +824,21 @@ class MW5Motion final:public uevr::Plugin {
         }
         return s+"}}";
     }
+    // Sender thread. The frame counts how often each foot has come down; every
+    // step not seen yet is a stomp on that side. Counters that start again (a new
+    // mech) or jump (a stall) are taken as they are, without a burst of stomps.
+    void watch_steps(const mw5::Frame& f) {
+        stepsKnown=f.FrameValid&&f.StepsKnown;
+        if(!stepsKnown){stepsSeen=false;return;}
+        uint32_t left=f.LeftSteps-leftSteps,right=f.RightSteps-rightSteps;
+        if(stepsSeen&&left<=2&&right<=2&&!wrecked) {
+            double strength=mw5::stomp_strength(hapticSettings,sentIdentity.weightClass);
+            if(left)haptics.stomp(true,strength,hapticSettings);
+            if(right)haptics.stomp(false,strength,hapticSettings);
+            if(g_footProbe&&events.is_open()&&(left||right))event(GetTickCount64(),left&&right?"footstep from the animation: both feet":left?"footstep from the animation: left":"footstep from the animation: right");
+        }
+        leftSteps=f.LeftSteps;rightSteps=f.RightSteps;stepsSeen=true;
+    }
     // Sender thread. The game says whether the mech is dead and why. The moment
     // it turns dead starts the vibration for that kind of death; the fall of the
     // mech is in the motion already. Only the player's own mech is ever read.
@@ -707,6 +879,12 @@ class MW5Motion final:public uevr::Plugin {
         else if(name=="abs")haptics.testAbs=2;
         else if(name=="jets")haptics.testJets=2;
         else if(name=="masc")haptics.testMasc=mw5::HapticState::kTestMascSeconds;
+        else if(name=="stomp_left"||name=="stomp_right"||name=="stomp_both") {
+            // With the strength of the weight class of the current mech.
+            double strength=mw5::stomp_strength(hapticSettings,sentIdentity.weightClass);
+            if(name!="stomp_right")haptics.stomp(true,strength,hapticSettings);
+            if(name!="stomp_left")haptics.stomp(false,strength,hapticSettings);
+        }
         else {
             known=false;
             for(auto& part:parts)if(name==part.first){haptics.part_destroyed(part.second,hapticSettings);known=true;}
@@ -845,13 +1023,13 @@ class MW5Motion final:public uevr::Plugin {
         if(!rows.is_open()||now<nextRow||sameFrame)return;
         nextRow=std::max(nextRow+1000/rowHz,now);
         char line[700];
-        int n=snprintf(line,sizeof(line),"%.3f,%u,%.5f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.3f,%d,%.4f,%d,%.4f,%u,%d,%d,%.0f,%.2f,%.3f,%.4f,%.4f\n",
+        int n=snprintf(line,sizeof(line),"%.3f,%u,%.5f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.3f,%d,%.4f,%d,%.4f,%u,%d,%d,%.0f,%.2f,%.3f,%.4f,%.4f,%.3f,%.3f\n",
             (now-started)/1000.0,f.Sequence,f.DeltaTime,f.OutputActive,f.Paused,f.PositionX,f.PositionY,f.PositionZ,
             f.RollDegrees,f.PitchDegrees,f.YawDegrees,f.RollSpeed,f.PitchSpeed,f.YawSpeed,
             f.LocalVelocityX,f.LocalVelocityY,f.LocalVelocityZ,f.LocalAccelerationX,f.LocalAccelerationY,f.LocalAccelerationZ,
             f.SpeedKmh,f.GameSpeedKmh,f.MaxSpeedKmh,f.Throttle,f.MascEngaged,f.MascGauge,f.JumpJetState,f.HeatPercent,f.PhysicsDiscontinuityCounter,
             hapticSettings.gear&&haptics.mascGear?2:1,hapticSettings.abs&&haptics.absActive?1:0,hapticSettings.engine?haptics.rpm:0.0,
-            f.GroundSpeedKmh,f.BouncePeakG,f.HeaveFactor,f.SafetyGain);
+            f.GroundSpeedKmh,f.BouncePeakG,f.HeaveFactor,f.SafetyGain,haptics.suspension[0],haptics.suspension[1]);
         if(n<=0)return;
         rows.write(line,n);recorded+=static_cast<uint64_t>(n);
         if(recorded>=kRecordLimit){rows.close();event(now,"sample recording stopped: size limit reached");}
@@ -861,6 +1039,7 @@ class MW5Motion final:public uevr::Plugin {
         // Heartbeats repeat a frame; advance the haptic state once per active sample.
         if(f.Sequence!=hapticSequence||!f.OutputActive) {
             watch_death(f,now);
+            watch_steps(f);
             haptics.update(f,hapticSettings);hapticSequence=f.Sequence;
             // A part being destroyed kicks the motion itself.
             haptics.apply_kick(f);haptics.advance_kick(f);
@@ -917,6 +1096,16 @@ class MW5Motion final:public uevr::Plugin {
                 char line[200];
                 snprintf(line,sizeof(line),"MechShaker event %d: int %d, floats %.3f %.3f %.3f %.3f %.3f %.3f",e.code,e.int0,e.f[0],e.f[1],e.f[2],e.f[3],e.f[4],e.f[5]);
                 event(now,line);
+            }
+            if(e.code==mw5::ShakerFootstep) {
+                // Only when the animation cannot be read: the event does not say which
+                // foot, so the feet simply alternate.
+                if(stepsKnown)return;
+                bool left=!lastStepLeft;
+                if(g_footProbe&&events.is_open())event(now,left?"footstep event: stomp on the left":"footstep event: stomp on the right");
+                lastStepLeft=left;
+                if(!wrecked)haptics.stomp(left,mw5::stomp_strength(hapticSettings,sentIdentity.weightClass),hapticSettings);
+                return;
             }
             if(e.code==mw5::ShakerPartDestruction) {
                 // Whether the mech is destroyed is the game's own verdict (watch_death).
@@ -990,9 +1179,10 @@ public:
             rows<<"TimeS,Sequence,DeltaTime,Active,Paused,PosX,PosY,PosZ,RollDeg,PitchDeg,YawDeg,RollSpeed,PitchSpeed,YawSpeed,"
                   "VelLateral,VelVertical,VelForward,AccLateral,AccVertical,AccForward,SpeedKmh,GameSpeedKmh,MaxSpeedKmh,Throttle,"
                   "MascEngaged,MascGauge,JumpJetState,HeatPercent,Discontinuities,Gear,AbsActive,EngineRpm,"
-                  "GroundSpeedKmh,BouncePeakG,HeaveFactor,SafetyGain\n";
+                  "GroundSpeedKmh,BouncePeakG,HeaveFactor,SafetyGain,StompLeft,StompRight\n";
             g_notesEnabled=events.is_open();
             g_deathProbe=events.is_open()&&setting(cfg,"DebugDeathProbe",0,0,1)!=0;
+            g_footProbe=events.is_open()&&setting(cfg,"DebugFootProbe",0,0,1)!=0;
             char line[400];
             snprintf(line,sizeof(line),"MW5 Motion %s debug log. SimHub %s %s:%d. CockpitYawOffsetDeg=%g, smoothing Hz: position=%g velocity=%g acceleration=%g angular=%g, %d rows/s",
                 kVersion,external.enabled?"on":"off",external.ip.c_str(),external.port,settings.yawOffsetDeg,settings.positionHz,settings.velocityHz,settings.accelerationHz,settings.angularHz,rowHz);
@@ -1032,6 +1222,7 @@ public:
         else reader=static_cast<int>(state);
         s.timestampMs=GetTickCount64();++samples;if(s.valid)++validSamples;
         if(g_deathProbe&&!probe_guarded()){g_deathProbe=false;g_probe={};note("death probe: a read failed; the probe is switched off");}
+        if(g_footProbe&&!foot_probe_guarded(dt)){g_footProbe=false;g_foot={};note("foot probe: a read failed; the probe is switched off");}
         bool renamed=update_identity(s);
         drain_panel();
         mw5::ease_settings(settings,target,dt);

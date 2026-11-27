@@ -56,6 +56,11 @@ inline constexpr PanelKey kPanelKeys[]={
     {"PartLegFactor",0.6,0,2,0,1.5,false},
     {"PartSideTorsoFactor",0.8,0,2,0,1.5,false},
     {"PartCoreFactor",1,0,2,0,1.5,false},
+    {"StompEnable",1,0,1,0,1,true},
+    {"StompLightStrength",0.25,0,2,0,2,false},
+    {"StompMediumStrength",0.5,0,2,0,2,false},
+    {"StompHeavyStrength",0.75,0,2,0,2,false},
+    {"StompAssaultStrength",1,0,2,0,2,false},
 };
 inline const PanelKey* panel_key(std::string_view name) {
     for(auto& k:kPanelKeys)if(name==k.name)return &k;
