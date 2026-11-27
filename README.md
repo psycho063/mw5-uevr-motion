@@ -8,13 +8,13 @@ The current version is 0.14.0, and the plugin is still in development. It was
 tested on one 3DOF platform with the MechWarriorVR mod. The plugin needs no MW5
 mod and works with or without mods such as YetAnotherMechlab.
 
-## Support development, share feedback and get support!
+## Support development, share feedback and get help
 
 I hope that you enjoy my work and are having tons of fun. This is a passion
 project and will always remain free. If you wish to support me you can always
 buy me a coffee: <https://ko-fi.com/psycho063>.
 
-The plugin has a dedicated support channel on the official MechWarriorVR mod
+The plugin has a dedicated support / feedback channel on the official MechWarriorVR mod
 Discord server: <https://discord.gg/9wc2cgFJWf>.
 
 ## The plugin sends motion and six kinds of effect to SimHub
